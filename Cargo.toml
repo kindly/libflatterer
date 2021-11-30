@@ -1,0 +1,28 @@
+[package]
+name = "libflatterer"
+version = "0.7.0"
+authors = ["David Raznick <kindly@gmail.com>"]
+edition = "2021"
+description = "Lib to make JSON flatterer"
+license = "MIT"
+repository = "https://github.com/kindly/libflatterer"
+homepage = "https://github.com/kindly/libflatterer"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+yajlish = { version = "0.3", features = ["ndjson"] } 
+serde_json = { version = "1", features = ["preserve_order"] }
+tempfile = "3"
+itertools = "0.10"
+csv = "1"
+serde = {version = "1", features = ["derive"] }
+xlsxwriter = "0.3"
+crossbeam-channel="0.5"
+smallvec="1.6.1"
+regex="1"
+jsonref= "0.4"
+slug="0.1"
+smartstring={version = "0.2", features = ["serde"] }
+snafu = {version = "0.6"}
+
