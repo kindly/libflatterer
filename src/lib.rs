@@ -132,7 +132,12 @@ impl fmt::Display for PathItem {
     }
 }
 
-///
+#[derive(Debug)]
+pub enum TmpCSVWriter{
+    Disk(csv::Writer<File>),
+    None()
+}
+
 #[derive(Debug)]
 pub struct FlatFiles {
     output_path: PathBuf,
@@ -143,7 +148,7 @@ pub struct FlatFiles {
     row_number: u128,
     date_regexp: Regex,
     table_rows: HashMap<String, Vec<Map<String, Value>>>,
-    tmp_csvs: HashMap<String, csv::Writer<File>>,
+    tmp_csvs: HashMap<String, TmpCSVWriter>,
     table_metadata: HashMap<String, TableMetadata>,
     only_fields: bool,
     inline_one_to_one: bool,
@@ -167,6 +172,7 @@ pub struct TableMetadata {
     order: Vec<usize>,
     field_titles: Vec<String>,
     table_name_with_separator: String,
+    output_path: PathBuf,
 }
 
 impl TableMetadata {
@@ -175,6 +181,7 @@ impl TableMetadata {
         main_table_name: &str,
         path_separator: &str,
         table_prefix: &str,
+        output_path: PathBuf
     ) -> TableMetadata {
         let table_name_with_separator = if table_name == main_table_name {
             "".to_string()
@@ -196,6 +203,7 @@ impl TableMetadata {
             order: vec![],
             field_titles: vec![],
             table_name_with_separator,
+            output_path
         }
     }
 }
@@ -546,20 +554,30 @@ impl FlatFiles {
 
     pub fn create_rows(&mut self) -> Result<()> {
         for (table, rows) in self.table_rows.iter_mut() {
-            let output_csv_path = self.output_path.join(format!("tmp/{}.csv", table));
             if !self.tmp_csvs.contains_key(table) {
-                self.tmp_csvs.insert(
-                    table.clone(),
-                    WriterBuilder::new()
-                        .flexible(true)
-                        .from_path(output_csv_path.clone())
-                        .context(FlattererCSVWriteError {
-                            filepath: &output_csv_path,
-                        })?,
-                );
+                if self.csv || self.xlsx {
+                    let output_path = self.output_path.join(format!("tmp/{}.csv", table));
+                    self.tmp_csvs.insert(
+                        table.clone(),
+                        TmpCSVWriter::Disk(
+                            WriterBuilder::new()
+                            .flexible(true)
+                            .from_path(output_path.clone())
+                            .context(FlattererCSVWriteError {
+                                filepath: &output_path,
+                            })?,
+                         )
+                    );
+                } else {
+                    self.tmp_csvs.insert(
+                        table.clone(),
+                        TmpCSVWriter::None()
+                    );
+                }
             }
 
             if !self.table_metadata.contains_key(table) {
+                let output_path = self.output_path.join(format!("tmp/{}.csv", table));
                 self.table_metadata.insert(
                     table.clone(),
                     TableMetadata::new(
@@ -567,6 +585,7 @@ impl FlatFiles {
                         &self.main_table_name,
                         &self.path_separator,
                         &self.table_prefix,
+                        output_path
                     ),
                 );
             }
@@ -614,11 +633,12 @@ impl FlatFiles {
                 }
                 if output_row.len() > 0 {
                     table_metadata.rows += 1;
-                    writer
-                        .write_record(&output_row)
-                        .context(FlattererCSVWriteError {
-                            filepath: &output_csv_path,
-                        })?;
+                    if let TmpCSVWriter::Disk(writer) =  writer{
+                        writer.write_record(&output_row)
+                            .context(FlattererCSVWriteError {
+                                filepath: &table_metadata.output_path,
+                            })?;
+                    }
                 }
             }
         }
@@ -658,6 +678,7 @@ impl FlatFiles {
             })?;
 
             if !self.table_metadata.contains_key(&row.table_name) {
+                let output_path = self.output_path.join(format!("tmp/{}.csv", &row.table_name));
                 self.table_metadata.insert(
                     row.table_name.clone(),
                     TableMetadata::new(
@@ -665,6 +686,7 @@ impl FlatFiles {
                         &self.main_table_name,
                         &self.path_separator,
                         &self.table_prefix,
+                        output_path
                     ),
                 );
             }
@@ -748,9 +770,11 @@ impl FlatFiles {
         self.determine_order();
 
         for (file, tmp_csv) in self.tmp_csvs.iter_mut() {
-            tmp_csv.flush().context(FlattererFileWriteError {
-                filename: file.clone(),
-            })?;
+            if let TmpCSVWriter::Disk(tmp_csv) = tmp_csv {
+                tmp_csv.flush().context(FlattererFileWriteError {
+                    filename: file.clone(),
+                })?;
+            }
         }
 
         if self.csv {
@@ -1485,9 +1509,11 @@ mod tests {
 
         flat_files.create_rows().unwrap();
 
+
         let expected_metadata = json!({
           "e": {
             "table_name_with_separator": "e_",
+            "output_path": tmp_dir.path().join("output/tmp/e.csv").to_string_lossy().into_owned(),
             "field_type": [
               "number",
               "text",
@@ -1524,6 +1550,7 @@ mod tests {
           },
           "main": {
             "table_name_with_separator": "",
+            "output_path": tmp_dir.path().join("output/tmp/main.csv").to_string_lossy().into_owned(),
             "field_type": [
               "text",
               "text",
@@ -1623,8 +1650,10 @@ mod tests {
               false
             ],
             "table_name_with_separator": "e_",
+            "output_path": tmp_dir.path().join("output/tmp/e.csv").to_string_lossy().into_owned(),
           },
           "main": {
+            "output_path": tmp_dir.path().join("output/tmp/main.csv").to_string_lossy().into_owned(),
             "field_type": [
               "text",
               "text",
@@ -1743,7 +1772,6 @@ mod tests {
         });
 
         let tmp_dir = TempDir::new().unwrap();
-
         let mut flat_files = FlatFiles::new(
             tmp_dir.path().join("output").to_string_lossy().into_owned(),
             true,
