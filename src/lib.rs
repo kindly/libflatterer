@@ -1454,246 +1454,34 @@ mod tests {
 
         flat_files.process_value(myjson.clone());
 
-        let expected_table_rows = json!({
-          "e": [
-            {
-              "_link": "1.e.0",
-              "_link_main": "1",
-              "ea": 1,
-              "eb": "eb2"
-            },
-            {
-              "_link": "1.e.1",
-              "_link_main": "1",
-              "ea": 2,
-              "eb": "eb2"
-            }
-          ],
-          "main": [
-            {
-              "_link": "1",
-              "_link_main": "1",
-              "a": "a",
-              "c": "a,b,c",
-              "d_da": "da",
-              "d_db": "2005-01-01"
-            }
-          ]
+        insta::with_settings!({sort_maps => true}, {
+            insta::assert_yaml_snapshot!(&flat_files.table_rows);
         });
-
-        //println!("{}", serde_json::to_value(&flat_files.table_rows).unwrap());
-
-        assert_eq!(
-            expected_table_rows,
-            serde_json::to_value(&flat_files.table_rows).unwrap()
-        );
 
         flat_files.create_rows().unwrap();
 
-
-        let expected_metadata = json!({
-          "e": {
-            "table_name_with_separator": "e_",
-            "output_path": tmp_dir.path().join("output/tmp/e.csv").to_string_lossy().into_owned(),
-            "field_type": [
-              "number",
-              "text",
-              "text",
-              "text",
-            ],
-            "fields": [
-              "ea",
-              "eb",
-              "_link",
-              "_link_main",
-            ],
-            "field_counts": [
-              2,
-              2,
-              2,
-              2
-            ],
-            "rows": 2,
-            "ignore": false,
-            "order": [],
-            "ignore_fields": [
-              false,
-              false,
-              false,
-              false
-            ],
-            "field_titles": [
-              "ea",
-              "eb",
-              "_link",
-              "_link_main",
-            ],
-          },
-          "main": {
-            "table_name_with_separator": "",
-            "output_path": tmp_dir.path().join("output/tmp/main.csv").to_string_lossy().into_owned(),
-            "field_type": [
-              "text",
-              "text",
-              "text",
-              "date",
-              "text",
-              "text",
-            ],
-            "fields": [
-              "a",
-              "c",
-              "d_da",
-              "d_db",
-              "_link",
-              "_link_main",
-            ],
-            "field_titles": [
-              "a",
-              "c",
-              "d_da",
-              "d_db",
-              "_link",
-              "_link_main",
-            ],
-            "order": [],
-            "field_counts": [
-              1,
-              1,
-              1,
-              1,
-              1,
-              1
-            ],
-            "rows": 1,
-            "ignore": false,
-            "ignore_fields": [
-              false,
-              false,
-              false,
-              false,
-              false,
-              false
-            ]
-          }
-        });
-
-        //println!(
-        //    "{}",
-        //    serde_json::to_string_pretty(&flat_files.table_metadata).unwrap()
-        //);
         assert_eq!(
             json!({"e": [],"main": []}),
             serde_json::to_value(&flat_files.table_rows).unwrap()
         );
-        assert_eq!(
-            expected_metadata,
-            serde_json::to_value(&flat_files.table_metadata).unwrap()
-        );
+
+        insta::with_settings!({sort_maps => true}, {
+            insta::assert_yaml_snapshot!(&flat_files.table_metadata,
+                                         {".*.output_path" => "[path]"})
+        });
 
         flat_files.process_value(myjson);
         flat_files.create_rows().unwrap();
 
-        let expected_metadata = json!(
-        {
-          "e": {
-            "field_type": [
-              "number",
-              "text",
-              "text",
-              "text",
-            ],
-            "fields": [
-              "ea",
-              "eb",
-              "_link",
-              "_link_main",
-            ],
-            "field_titles": [
-              "ea",
-              "eb",
-              "_link",
-              "_link_main",
-            ],
-            "field_counts": [
-              4,
-              4,
-              4,
-              4
-            ],
-            "rows": 4,
-            "ignore": false,
-            "order": [],
-            "ignore_fields": [
-              false,
-              false,
-              false,
-              false
-            ],
-            "table_name_with_separator": "e_",
-            "output_path": tmp_dir.path().join("output/tmp/e.csv").to_string_lossy().into_owned(),
-          },
-          "main": {
-            "output_path": tmp_dir.path().join("output/tmp/main.csv").to_string_lossy().into_owned(),
-            "field_type": [
-              "text",
-              "text",
-              "text",
-              "date",
-              "text",
-              "text",
-            ],
-            "fields": [
-              "a",
-              "c",
-              "d_da",
-              "d_db",
-              "_link",
-              "_link_main",
-            ],
-            "field_titles": [
-              "a",
-              "c",
-              "d_da",
-              "d_db",
-              "_link",
-              "_link_main",
-            ],
-            "field_counts": [
-              2,
-              2,
-              2,
-              2,
-              2,
-              2
-            ],
-            "rows": 2,
-            "ignore": false,
-            "order": [],
-            "ignore_fields": [
-              false,
-              false,
-              false,
-              false,
-              false,
-              false
-            ],
-            "table_name_with_separator": "",
-          }
-        });
-
-        //println!(
-        //    "{}",
-        //    serde_json::to_string_pretty(&flat_files.table_metadata).unwrap()
-        //);
         assert_eq!(
             json!({"e": [],"main": []}),
             serde_json::to_value(&flat_files.table_rows).unwrap()
         );
-        assert_eq!(
-            expected_metadata,
-            serde_json::to_value(&flat_files.table_metadata).unwrap()
-        );
+
+        insta::with_settings!({sort_maps => true}, {
+            insta::assert_yaml_snapshot!(&flat_files.table_metadata,
+                                         {".*.output_path" => "[path]"})
+        });
     }
 
     #[test]
@@ -1730,15 +1518,10 @@ mod tests {
         flat_files.create_rows().unwrap();
         flat_files.mark_ignore();
 
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&flat_files.table_metadata).unwrap()
-        );
-        assert!(flat_files.table_metadata.get("e").unwrap().ignore);
-        assert!(
-            flat_files.table_metadata.get("main").unwrap().ignore_fields
-                == vec![false, false, false, false, false]
-        );
+        insta::with_settings!({sort_maps => true}, {
+            insta::assert_yaml_snapshot!(&flat_files.table_metadata,
+                                         {".*.output_path" => "[path]"})
+        });
     }
 
     #[test]
@@ -1774,14 +1557,9 @@ mod tests {
         flat_files.create_rows().unwrap();
         flat_files.mark_ignore();
 
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&flat_files.table_metadata).unwrap()
-        );
-        assert!(!flat_files.table_metadata.get("e").unwrap().ignore);
-        assert!(
-            flat_files.table_metadata.get("main").unwrap().ignore_fields
-                == vec![false, true, true, false, false]
-        );
+        insta::with_settings!({sort_maps => true}, {
+            insta::assert_yaml_snapshot!(&flat_files.table_metadata,
+                                         {".*.output_path" => "[path]"})
+        });
     }
 }
