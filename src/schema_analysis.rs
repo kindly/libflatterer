@@ -28,14 +28,14 @@ pub struct SchemaAnalysis {
 
 impl SchemaAnalysis {
     fn new(schema: &str, path_separator: &str, title_tactic: String) -> SchemaAnalysis {
-        return SchemaAnalysis {
+        SchemaAnalysis {
             schema: schema.to_owned(),
             path_separator: path_separator.to_owned(),
             field_order: vec![],
             field_order_map: HashMap::new(),
             field_titles_map: HashMap::new(),
             title_tactic,
-        };
+        }
     }
 
     fn parse(&mut self) -> Result<()> {
@@ -76,7 +76,7 @@ impl SchemaAnalysis {
                 } else {
                     let field_path = new_path.join(&self.path_separator);
                     self.field_order.push(field_path.clone());
-                    if self.title_tactic != "" {
+                    if !self.title_tactic.is_empty() {
                         let mut title = "".to_string();
 
                         if let Some(title_value) = property.get("title") {
@@ -107,7 +107,7 @@ pub fn schema_analysis(
     let mut schema = SchemaAnalysis::new(schema_path, path_separator, title_tactic);
     schema.parse()?;
 
-    return Ok(schema);
+    Ok(schema)
 }
 
 #[cfg(test)]

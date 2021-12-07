@@ -37,9 +37,10 @@ mod postgresql;
 mod schema_analysis;
 
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::convert::TryInto;
 use std::fmt;
-use std::fs::{canonicalize, create_dir_all, remove_dir_all, File};
+use std::fs::{create_dir_all, remove_dir_all, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::{panic, thread};
@@ -186,7 +187,7 @@ impl TableMetadata {
             "".to_string()
         } else {
             let mut full_path = format!("{}{}", table_name, path_separator);
-            if table_prefix != "" {
+            if !table_prefix.is_empty() {
                 full_path.replace_range(0..table_prefix.len(), "");
             }
             full_path
@@ -251,7 +252,7 @@ impl FlatFiles {
         schema_titles: String,
     ) -> Result<FlatFiles> {
         smartstring::validate();
-        let output_path = PathBuf::from(output_dir.clone());
+        let output_path = PathBuf::from(output_dir);
         if output_path.is_dir() {
             if force {
                 remove_dir_all(&output_path).context(FlattererRemoveDir {
@@ -276,7 +277,7 @@ impl FlatFiles {
         let order_map;
         let field_titles_map;
 
-        if schema != "" {
+        if !schema.is_empty() {
             let schema_analysis =
                 schema_analysis::schema_analysis(&schema, &path_separator, schema_titles)
                     .context(JSONRefError {})?;
@@ -345,8 +346,7 @@ impl FlatFiles {
                 }
                 if arr_length == 0 {
                     to_delete.push(key.clone());
-                }
-                if str_count == arr_length {
+                } else if str_count == arr_length {
                     let keys: Vec<String> = arr
                         .iter()
                         .map(|val| (val.as_str().unwrap().to_string())) //value known as str
@@ -381,7 +381,7 @@ impl FlatFiles {
                                 if !self.one_to_one_arrays.contains(&new_no_index_path) {
                                     self.one_to_one_arrays.push(new_no_index_path.clone())
                                 }
-                            } else if arr_length > 1 {
+                            } else {
                                 self.one_to_one_arrays.retain(|x| x != &new_no_index_path);
                                 self.one_to_many_arrays.push(new_no_index_path.clone())
                             }
@@ -441,7 +441,7 @@ impl FlatFiles {
                         new_no_index_path,
                         one_to_many_full_paths.clone(),
                         one_to_many_no_index_paths.clone(),
-                        one_to_one_array_keys.contains(&key),
+                        one_to_one_array_keys.contains(key),
                     );
                     if let Some(mut my_obj) = new_obj {
                         for (new_key, new_value) in my_obj.iter_mut() {
@@ -488,7 +488,7 @@ impl FlatFiles {
             .zip(one_to_many_no_index_paths)
             .peekable();
 
-        if one_to_many_full_paths.len() == 0 {
+        if one_to_many_full_paths.is_empty() {
             obj.insert(
                 String::from("_link"),
                 Value::String(self.row_number.to_string()),
@@ -538,15 +538,16 @@ impl FlatFiles {
         ]
         .concat();
 
-        if no_index_path.len() == 0 {
+        if no_index_path.is_empty() {
             table_name = self.main_table_name.clone();
         }
 
-        if !self.table_rows.contains_key(&table_name) {
-            self.table_rows.insert(table_name, vec![obj]);
-        } else {
-            let current_list = self.table_rows.get_mut(&table_name).unwrap(); //key known
-            current_list.push(obj)
+        match self.table_rows.entry(table_name) {
+            Entry::Vacant(e) => {e.insert(vec![obj]);},
+            Entry::Occupied(mut e) => {
+                let current_list = e.get_mut();
+                current_list.push(obj);
+            }
         }
     }
 
@@ -629,7 +630,7 @@ impl FlatFiles {
                         ));
                     }
                 }
-                if output_row.len() > 0 {
+                if !output_row.is_empty() {
                     table_metadata.rows += 1;
                     if let TmpCSVWriter::Disk(writer) =  writer{
                         writer.write_record(&output_row)
@@ -699,7 +700,7 @@ impl FlatFiles {
             }
         }
 
-        return Ok(());
+        Ok(())
     }
 
     pub fn mark_ignore(&mut self) {
@@ -748,17 +749,17 @@ impl FlatFiles {
                 if field.starts_with("_link") {
                     schema_order = 0
                 } else if let Some(order) = self.order_map.get(&full_path) {
-                    schema_order = order.clone()
+                    schema_order = *order
                 } else {
                     schema_order = usize::MAX;
                 }
                 fields_to_order.push((schema_order, num))
             }
 
-            fields_to_order.sort();
+            fields_to_order.sort_unstable();
 
             for (_, field_order) in fields_to_order.iter() {
-                metadata.order.push(field_order.clone());
+                metadata.order.push(*field_order);
             }
         }
     }
@@ -1069,7 +1070,7 @@ impl FlatFiles {
         }
         workbook.close().context(FlattererXLSXError {})?;
 
-        return Ok(());
+        Ok(())
     }
 
     pub fn write_postgresql(&mut self) -> Result<()> {
@@ -1093,9 +1094,9 @@ impl FlatFiles {
                 continue;
             }
             let table_order = metadata.order.clone();
-            write!(
+            writeln!(
                 postgresql_schema,
-                "CREATE TABLE \"{ }\"(\n",
+                "CREATE TABLE \"{ }\"(",
                 table_name.to_lowercase()
             )
             .context(FlattererFileWriteError {
@@ -1118,24 +1119,15 @@ impl FlatFiles {
                     filename: "postgresql_schema.sql",
                 },
             )?;
-            write!(postgresql_schema, "{}", ");\n\n").context(FlattererFileWriteError {
+            write!(postgresql_schema, ");\n\n").context(FlattererFileWriteError {
                 filename: "postgresql_schema.sql",
             })?;
 
-            let csv_path = canonicalize(
-                self.output_path
-                    .join("csv")
-                    .join(format!("{}.csv", table_name)),
-            )
-            .context(FlattererFileWriteError {
-                filename: "postgresql_load.sql",
-            })?;
-
-            write!(
+            writeln!(
                 postgresql_load,
-                "\\copy \"{}\" from '{}' with CSV HEADER\n",
+                "\\copy \"{}\" from '{}' with CSV HEADER",
                 table_name.to_lowercase(),
-                csv_path.to_string_lossy()
+                format!("csv/{}.csv", table_name),
             )
             .context(FlattererFileWriteError {
                 filename: "postgresql_load.sql",
@@ -1162,7 +1154,7 @@ impl FlatFiles {
             },
         )?;
 
-        write!(sqlite_load, "{}", ".mode csv \n").context(FlattererFileWriteError {
+        writeln!(sqlite_load, ".mode csv ").context(FlattererFileWriteError {
             filename: "sqlite_schema.sql",
         })?;
 
@@ -1172,9 +1164,9 @@ impl FlatFiles {
                 continue;
             }
             let table_order = metadata.order.clone();
-            write!(
+            writeln!(
                 sqlite_schema,
-                "CREATE TABLE \"{ }\"(\n",
+                "CREATE TABLE \"{ }\"(",
                 table_name.to_lowercase()
             )
             .context(FlattererFileWriteError {
@@ -1195,23 +1187,14 @@ impl FlatFiles {
             write!(sqlite_schema, "{}", fields.join(",\n")).context(FlattererFileWriteError {
                 filename: "sqlite_schema.sql",
             })?;
-            write!(sqlite_schema, "{}", ");\n\n").context(FlattererFileWriteError {
+            write!(sqlite_schema, ");\n\n").context(FlattererFileWriteError {
                 filename: "sqlite_schema.sql",
             })?;
 
-            let csv_path = canonicalize(
-                self.output_path
-                    .join("csv")
-                    .join(format!("{}.csv", table_name)),
-            )
-            .context(FlattererFileWriteError {
-                filename: "sqlite_load.sql",
-            })?;
-
-            write!(
+            writeln!(
                 sqlite_load,
-                ".import '{}' {} --skip 1 \n",
-                csv_path.to_string_lossy(),
+                ".import '{}' {} --skip 1 ",
+                format!("csv/{}.csv", table_name),
                 table_name.to_lowercase()
             )
             .context(FlattererFileWriteError {
@@ -1608,7 +1591,7 @@ mod tests {
             serde_json::to_value(&flat_files.table_metadata).unwrap()
         );
 
-        flat_files.process_value(myjson.clone());
+        flat_files.process_value(myjson);
         flat_files.create_rows().unwrap();
 
         let expected_metadata = json!(
@@ -1751,7 +1734,7 @@ mod tests {
             "{}",
             serde_json::to_string_pretty(&flat_files.table_metadata).unwrap()
         );
-        assert!(flat_files.table_metadata.get("e").unwrap().ignore == true);
+        assert!(flat_files.table_metadata.get("e").unwrap().ignore);
         assert!(
             flat_files.table_metadata.get("main").unwrap().ignore_fields
                 == vec![false, false, false, false, false]
@@ -1795,7 +1778,7 @@ mod tests {
             "{}",
             serde_json::to_string_pretty(&flat_files.table_metadata).unwrap()
         );
-        assert!(flat_files.table_metadata.get("e").unwrap().ignore == false);
+        assert!(!flat_files.table_metadata.get("e").unwrap().ignore);
         assert!(
             flat_files.table_metadata.get("main").unwrap().ignore_fields
                 == vec![false, true, true, false, false]

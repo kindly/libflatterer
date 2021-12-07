@@ -1,6 +1,6 @@
 pub fn to_postgresql_type(json_type: &str)-> String {
 
-    return match json_type {
+    match json_type {
         "text" => "TEXT".to_string(),
         "date" => "TIMESTAMP".to_string(),
         "number" => "NUMERIC".to_string(),
