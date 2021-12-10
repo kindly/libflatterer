@@ -224,7 +224,9 @@ struct JLWriter {
 impl Write for JLWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf == [b'\n'] {
-            self.buf_sender.send(self.buf.clone()).unwrap();
+            if let Err(e) = self.buf_sender.send(self.buf.clone()) {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, e))
+            }
             self.buf.clear();
             Ok(buf.len())
         } else {
