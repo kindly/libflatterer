@@ -139,26 +139,28 @@ pub enum TmpCSVWriter{
     None()
 }
 
+
 #[derive(Debug)]
 pub struct FlatFiles {
     output_path: PathBuf,
     csv: bool,
-    xlsx: bool,
-    main_table_name: String,
+    pub xlsx: bool,
+    pub main_table_name: String,
     emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]>,
     row_number: u128,
     date_regexp: Regex,
     table_rows: HashMap<String, Vec<Map<String, Value>>>,
     tmp_csvs: HashMap<String, TmpCSVWriter>,
     table_metadata: HashMap<String, TableMetadata>,
-    only_fields: bool,
-    inline_one_to_one: bool,
+    pub only_fields: bool,
+    pub inline_one_to_one: bool,
     one_to_many_arrays: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
     one_to_one_arrays: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
-    table_prefix: String,
-    path_separator: String,
+    pub table_prefix: String,
+    pub path_separator: String,
     order_map: HashMap<String, usize>,
     field_titles_map: HashMap<String, String>,
+    pub preview: usize
 }
 
 #[derive(Serialize, Debug)]
@@ -239,7 +241,26 @@ impl Write for JLWriter {
     }
 }
 
+
 impl FlatFiles {
+    pub fn new_with_defaults(
+        output_dir: String,
+    ) -> Result<Self> {
+        return FlatFiles::new(
+            output_dir,
+            true,
+            false,
+            false,
+            "main".to_string(),
+            vec![],
+            false,
+            "".to_string(),
+            "".to_string(),
+            "_".to_string(),
+            "".to_string(),
+        )
+    }
+
     pub fn new(
         output_dir: String,
         csv: bool,
@@ -252,8 +273,9 @@ impl FlatFiles {
         table_prefix: String,
         path_separator: String,
         schema_titles: String,
-    ) -> Result<FlatFiles> {
+    ) -> Result<Self> {
         smartstring::validate();
+
         let output_path = PathBuf::from(output_dir);
         if output_path.is_dir() {
             if force {
@@ -264,39 +286,15 @@ impl FlatFiles {
                 return Err(Error::FlattererDirExists { dir: output_path });
             }
         }
-        if csv {
-            let csv_path = output_path.join("csv");
-            create_dir_all(&csv_path).context(FlattererCreateDir {
-                filename: csv_path.to_string_lossy(),
-            })?;
-        }
 
         let tmp_path = output_path.join("tmp");
         create_dir_all(&tmp_path).context(FlattererCreateDir {
             filename: tmp_path.to_string_lossy(),
         })?;
 
-        let order_map;
-        let field_titles_map;
+        let smallvec_emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]> = smallvec![];
 
-        if !schema.is_empty() {
-            let schema_analysis =
-                schema_analysis::schema_analysis(&schema, &path_separator, schema_titles)
-                    .context(JSONRefError {})?;
-            order_map = schema_analysis.field_order_map;
-            field_titles_map = schema_analysis.field_titles_map;
-        } else {
-            order_map = HashMap::new();
-            field_titles_map = HashMap::new()
-        }
-
-        let mut smallvec_emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]> = smallvec![];
-
-        for emit_vec in emit_obj {
-            smallvec_emit_obj.push(SmallVec::from_vec(emit_vec))
-        }
-
-        Ok(FlatFiles {
+        let mut flat_files = FlatFiles {
             output_path,
             csv,
             xlsx,
@@ -313,10 +311,68 @@ impl FlatFiles {
             one_to_one_arrays: SmallVec::new(),
             table_prefix,
             path_separator,
-            order_map,
-            field_titles_map
-        })
+            order_map: HashMap::new(),
+            field_titles_map: HashMap::new(),
+            preview: 0
+        };
+
+        flat_files.set_csv(csv)?;
+
+        if !schema.is_empty() {
+            flat_files.set_schema(schema, schema_titles)?;
+        }; 
+
+        flat_files.set_emit_obj(emit_obj)?;
+
+        Ok(flat_files)
     }
+
+    fn set_csv(
+        &mut self,
+        csv: bool
+    ) -> Result<()> {
+        self.csv = csv;
+        let csv_path = self.output_path.join("csv");
+        if csv {
+            if !csv_path.is_dir() {
+                create_dir_all(&csv_path).context(FlattererCreateDir {
+                    filename: csv_path.to_string_lossy(),
+                })?;
+            }
+        } else {
+            if csv_path.is_dir() {
+                remove_dir_all(&csv_path).context(FlattererRemoveDir {
+                    filename: csv_path.to_string_lossy(),
+                })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn set_schema(
+        &mut self,
+        schema: String,
+        schema_titles: String
+    ) -> Result<()> {
+
+        let schema_analysis =
+            schema_analysis::schema_analysis(&schema, &self.path_separator, schema_titles)
+                .context(JSONRefError {})?;
+        self.order_map = schema_analysis.field_order_map;
+        self.field_titles_map = schema_analysis.field_titles_map;
+        Ok(())
+    }
+
+    fn set_emit_obj(
+        &mut self,
+        emit_obj: Vec<Vec<String>>
+    ) -> Result<()> {
+        for emit_vec in emit_obj {
+            self.emit_obj.push(SmallVec::from_vec(emit_vec))
+        }
+        Ok(())
+    }
+        
 
     fn handle_obj(
         &mut self,
@@ -946,7 +1002,10 @@ impl FlatFiles {
 
             let mut output_row = ByteRecord::new();
 
-            for row in csv_reader.into_byte_records() {
+            for (num, row) in csv_reader.into_byte_records().enumerate() {
+                if self.preview != 0 && num == self.preview {
+                    break
+                }
                 let this_row = row.context(FlattererCSVWriteError {
                     filepath: &filepath,
                 })?;
