@@ -36,8 +36,7 @@
 mod postgresql;
 mod schema_analysis;
 
-use std::collections::HashMap;
-use std::collections::hash_map::Entry;
+use indexmap::IndexMap as HashMap;
 use std::convert::TryInto;
 use std::fmt;
 use std::fs::{create_dir_all, remove_dir_all, File};
@@ -384,6 +383,24 @@ impl FlatFiles {
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
         one_to_one_key: bool,
     ) -> Option<Map<String, Value>> {
+
+        let mut table_name = String::new();
+        if emit {
+            table_name = [
+                self.table_prefix.clone(),
+                no_index_path.join(&self.path_separator),
+            ]
+            .concat();
+
+            if no_index_path.is_empty() {
+                table_name = self.main_table_name.clone();
+            }
+
+            if !self.table_rows.contains_key(&table_name) {
+                self.table_rows.insert(table_name.clone(), vec![]);
+            }
+        }
+
         let mut to_insert: SmallVec<[(String, Value); 30]> = smallvec![];
         let mut to_delete: SmallVec<[String; 30]> = smallvec![];
 
@@ -524,7 +541,7 @@ impl FlatFiles {
         if emit {
             self.process_obj(
                 obj,
-                no_index_path,
+                table_name,
                 one_to_many_full_paths,
                 one_to_many_no_index_paths,
             );
@@ -537,7 +554,7 @@ impl FlatFiles {
     pub fn process_obj(
         &mut self,
         mut obj: Map<String, Value>,
-        no_index_path: SmallVec<[SmartString; 5]>,
+        table_name: String,
         one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
     ) {
@@ -590,23 +607,8 @@ impl FlatFiles {
             Value::String(self.row_number.to_string()),
         );
 
-        let mut table_name = [
-            self.table_prefix.clone(),
-            no_index_path.join(&self.path_separator),
-        ]
-        .concat();
-
-        if no_index_path.is_empty() {
-            table_name = self.main_table_name.clone();
-        }
-
-        match self.table_rows.entry(table_name) {
-            Entry::Vacant(e) => {e.insert(vec![obj]);},
-            Entry::Occupied(mut e) => {
-                let current_list = e.get_mut();
-                current_list.push(obj);
-            }
-        }
+        let current_list = self.table_rows.get_mut(&table_name).unwrap(); //we added table_row already
+        current_list.push(obj);
     }
 
     pub fn create_rows(&mut self) -> Result<()> {
@@ -864,7 +866,7 @@ impl FlatFiles {
 
         let mut resources = vec![];
 
-        for table_name in self.table_metadata.keys().sorted() {
+        for table_name in self.table_metadata.keys() {
             let metadata = self.table_metadata.get(table_name).unwrap();
             let mut fields = vec![];
             if metadata.rows == 0 || metadata.ignore {
@@ -931,7 +933,7 @@ impl FlatFiles {
             .context(FlattererCSVWriteError {
                 filepath: filepath.clone(),
             })?;
-        for table_name in self.table_metadata.keys().sorted() {
+        for table_name in self.table_metadata.keys() {
             let metadata = self.table_metadata.get(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1149,7 +1151,7 @@ impl FlatFiles {
                 filename: "postgresql_load.sql",
             })?;
 
-        for table_name in self.table_metadata.keys().sorted() {
+        for table_name in self.table_metadata.keys() {
             let metadata = self.table_metadata.get(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1219,7 +1221,7 @@ impl FlatFiles {
             filename: "sqlite_schema.sql",
         })?;
 
-        for table_name in self.table_metadata.keys().sorted() {
+        for table_name in self.table_metadata.keys() {
             let metadata = self.table_metadata.get(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1515,9 +1517,7 @@ mod tests {
 
         flat_files.process_value(myjson.clone());
 
-        insta::with_settings!({sort_maps => true}, {
-            insta::assert_yaml_snapshot!(&flat_files.table_rows);
-        });
+        insta::assert_yaml_snapshot!(&flat_files.table_rows);
 
         flat_files.create_rows().unwrap();
 
@@ -1526,10 +1526,8 @@ mod tests {
             serde_json::to_value(&flat_files.table_rows).unwrap()
         );
 
-        insta::with_settings!({sort_maps => true}, {
-            insta::assert_yaml_snapshot!(&flat_files.table_metadata,
-                                         {".*.output_path" => "[path]"})
-        });
+        insta::assert_yaml_snapshot!(&flat_files.table_metadata,
+                                     {".*.output_path" => "[path]"});
 
         flat_files.process_value(myjson);
         flat_files.create_rows().unwrap();
@@ -1539,10 +1537,8 @@ mod tests {
             serde_json::to_value(&flat_files.table_rows).unwrap()
         );
 
-        insta::with_settings!({sort_maps => true}, {
-            insta::assert_yaml_snapshot!(&flat_files.table_metadata,
-                                         {".*.output_path" => "[path]"})
-        });
+        insta::assert_yaml_snapshot!(&flat_files.table_metadata,
+                                     {".*.output_path" => "[path]"});
     }
 
     #[test]
@@ -1579,10 +1575,8 @@ mod tests {
         flat_files.create_rows().unwrap();
         flat_files.mark_ignore();
 
-        insta::with_settings!({sort_maps => true}, {
-            insta::assert_yaml_snapshot!(&flat_files.table_metadata,
-                                         {".*.output_path" => "[path]"})
-        });
+        insta::assert_yaml_snapshot!(&flat_files.table_metadata,
+                                     {".*.output_path" => "[path]"});
     }
 
     #[test]
@@ -1618,9 +1612,7 @@ mod tests {
         flat_files.create_rows().unwrap();
         flat_files.mark_ignore();
 
-        insta::with_settings!({sort_maps => true}, {
-            insta::assert_yaml_snapshot!(&flat_files.table_metadata,
-                                         {".*.output_path" => "[path]"})
-        });
+        insta::assert_yaml_snapshot!(&flat_files.table_metadata,
+                                     {".*.output_path" => "[path]"});
     }
 }

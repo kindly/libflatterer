@@ -1,7 +1,7 @@
 use jsonref::JsonRef;
 use serde_json::Value;
 use slug::slugify;
-use std::collections::HashMap;
+use indexmap::IndexMap as HashMap;
 use snafu::{Snafu, ResultExt};
 
 #[non_exhaustive]
@@ -116,132 +116,44 @@ mod tests {
 
     #[test]
     fn test_schema_order() {
-        let expected: HashMap<String, usize> = HashMap::from([
-            ("prop1".to_string(), 1),
-            ("prop2".to_string(), 2),
-            ("prop3_prop1".to_string(), 3),
-            ("prop3_prop2".to_string(), 4),
-            ("prop4".to_string(), 5),
-            ("prop5".to_string(), 6),
-        ]);
-
-        assert_eq!(
-            schema_analysis(
+        insta::assert_yaml_snapshot!(
+             schema_analysis(
                 "https://gist.githubusercontent.com/kindly/91e09f88ced65aaca1a15d85a56a28f9/raw/52f8477435cff0b73c54aacc70926c101ce6c685/base.json",
                 "_",
                 "".to_string(),
-                ).unwrap().field_order_map,  expected
-            );
+                ).unwrap().field_order_map
+            )
+
     }
 
     #[test]
     fn test_schema_titles() {
-        let expected: HashMap<String, String> = HashMap::from([
-            (
-                "prop1".to_string(),
-                "sub property title in base.json".to_string(),
-            ),
-            (
-                "prop2".to_string(),
-                "sub property title in base.json".to_string(),
-            ),
-            (
-                "prop3_prop1".to_string(),
-                "sub property title in other.json".to_string(),
-            ),
-            (
-                "prop3_prop2".to_string(),
-                "sub property title in other.json".to_string(),
-            ),
-            (
-                "prop4".to_string(),
-                "sub property title in other.json".to_string(),
-            ),
-            (
-                "prop5".to_string(),
-                "sub property title in other.json".to_string(),
-            ),
-        ]);
-
-        assert_eq!(
+        insta::assert_yaml_snapshot!(
             schema_analysis(
                 "https://gist.githubusercontent.com/kindly/91e09f88ced65aaca1a15d85a56a28f9/raw/52f8477435cff0b73c54aacc70926c101ce6c685/base.json",
                 "_",
                 "full".to_string(), 
-                ).unwrap().field_titles_map,  expected
+                ).unwrap().field_titles_map
             );
     }
 
     #[test]
     fn test_slug() {
-        let expected: HashMap<String, String> = HashMap::from([
-            (
-                "prop1".to_string(),
-                "sub_property_title_in_base_json".to_string(),
-            ),
-            (
-                "prop2".to_string(),
-                "sub_property_title_in_base_json".to_string(),
-            ),
-            (
-                "prop3_prop1".to_string(),
-                "sub_property_title_in_other_json".to_string(),
-            ),
-            (
-                "prop3_prop2".to_string(),
-                "sub_property_title_in_other_json".to_string(),
-            ),
-            (
-                "prop4".to_string(),
-                "sub_property_title_in_other_json".to_string(),
-            ),
-            (
-                "prop5".to_string(),
-                "sub_property_title_in_other_json".to_string(),
-            ),
-        ]);
 
-        assert_eq!(
+        insta::assert_yaml_snapshot!(
             schema_analysis(
                 "https://gist.githubusercontent.com/kindly/91e09f88ced65aaca1a15d85a56a28f9/raw/52f8477435cff0b73c54aacc70926c101ce6c685/base.json",
                 "_",
                 "underscore_slug".to_string(), 
-                ).unwrap().field_titles_map,  expected
+                ).unwrap().field_titles_map
             );
 
-        let expected: HashMap<String, String> = HashMap::from([
-            (
-                "prop1".to_string(),
-                "sub-property-title-in-base-json".to_string(),
-            ),
-            (
-                "prop2".to_string(),
-                "sub-property-title-in-base-json".to_string(),
-            ),
-            (
-                "prop3_prop1".to_string(),
-                "sub-property-title-in-other-json".to_string(),
-            ),
-            (
-                "prop3_prop2".to_string(),
-                "sub-property-title-in-other-json".to_string(),
-            ),
-            (
-                "prop4".to_string(),
-                "sub-property-title-in-other-json".to_string(),
-            ),
-            (
-                "prop5".to_string(),
-                "sub-property-title-in-other-json".to_string(),
-            ),
-        ]);
-
-        assert_eq!(
+        insta::assert_yaml_snapshot!(
             schema_analysis(
                 "https://gist.githubusercontent.com/kindly/91e09f88ced65aaca1a15d85a56a28f9/raw/52f8477435cff0b73c54aacc70926c101ce6c685/base.json",
                 "_",
                 "slug".to_string(), 
-                ).unwrap().field_titles_map,  expected
+                ).unwrap().field_titles_map
             );
     }
 }

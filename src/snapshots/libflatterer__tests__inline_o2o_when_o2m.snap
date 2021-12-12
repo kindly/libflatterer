@@ -3,37 +3,6 @@ source: src/lib.rs
 expression: "&flat_files.table_metadata"
 
 ---
-e:
-  field_type:
-    - number
-    - text
-    - text
-    - text
-  fields:
-    - ea
-    - eb
-    - _link
-    - _link_main
-  field_counts:
-    - 3
-    - 3
-    - 3
-    - 3
-  rows: 3
-  ignore: false
-  ignore_fields:
-    - false
-    - false
-    - false
-    - false
-  order: []
-  field_titles:
-    - ea
-    - eb
-    - _link
-    - _link_main
-  table_name_with_separator: e_
-  output_path: "[path]"
 main:
   field_type:
     - text
@@ -69,5 +38,36 @@ main:
     - _link
     - _link_main
   table_name_with_separator: ""
+  output_path: "[path]"
+e:
+  field_type:
+    - number
+    - text
+    - text
+    - text
+  fields:
+    - ea
+    - eb
+    - _link
+    - _link_main
+  field_counts:
+    - 3
+    - 3
+    - 3
+    - 3
+  rows: 3
+  ignore: false
+  ignore_fields:
+    - false
+    - false
+    - false
+    - false
+  order: []
+  field_titles:
+    - ea
+    - eb
+    - _link
+    - _link_main
+  table_name_with_separator: e_
   output_path: "[path]"
 

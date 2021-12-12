@@ -25,6 +25,7 @@ jsonref= "0.4"
 slug="0.1"
 smartstring={version = "0.2", features = ["serde"] }
 snafu = {version = "0.6"}
+indexmap = {version = "1", features = ["serde"] }
 
 [dev-dependencies]
 insta = {version = "1.8.0", features = ["redactions"]}

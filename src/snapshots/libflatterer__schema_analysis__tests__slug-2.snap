@@ -1,0 +1,12 @@
+---
+source: src/schema_analysis.rs
+expression: "schema_analysis(\"https://gist.githubusercontent.com/kindly/91e09f88ced65aaca1a15d85a56a28f9/raw/52f8477435cff0b73c54aacc70926c101ce6c685/base.json\",\n                \"_\", \"slug\".to_string()).unwrap().field_titles_map"
+
+---
+prop1: sub-property-title-in-base-json
+prop2: sub-property-title-in-base-json
+prop3_prop1: sub-property-title-in-other-json
+prop3_prop2: sub-property-title-in-other-json
+prop4: sub-property-title-in-other-json
+prop5: sub-property-title-in-other-json
+

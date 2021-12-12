@@ -3,20 +3,20 @@ source: src/lib.rs
 expression: "&flat_files.table_rows"
 
 ---
-e:
-  - _link: 1.e.0
-    _link_main: "1"
-    ea: 1
-    eb: eb2
-  - _link: 1.e.1
-    _link_main: "1"
-    ea: 2
-    eb: eb2
 main:
-  - _link: "1"
-    _link_main: "1"
-    a: a
+  - a: a
     c: "a,b,c"
     d_da: da
     d_db: 2005-01-01
+    _link: "1"
+    _link_main: "1"
+e:
+  - ea: 1
+    eb: eb2
+    _link: 1.e.0
+    _link_main: "1"
+  - ea: 2
+    eb: eb2
+    _link: 1.e.1
+    _link_main: "1"
 
