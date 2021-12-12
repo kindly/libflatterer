@@ -133,11 +133,10 @@ impl fmt::Display for PathItem {
 }
 
 #[derive(Debug)]
-pub enum TmpCSVWriter{
+pub enum TmpCSVWriter {
     Disk(csv::Writer<File>),
-    None()
+    None(),
 }
-
 
 #[derive(Debug)]
 pub struct FlatFiles {
@@ -159,7 +158,7 @@ pub struct FlatFiles {
     pub path_separator: String,
     order_map: HashMap<String, usize>,
     field_titles_map: HashMap<String, String>,
-    pub preview: usize
+    pub preview: usize,
 }
 
 #[derive(Serialize, Debug)]
@@ -182,7 +181,7 @@ impl TableMetadata {
         main_table_name: &str,
         path_separator: &str,
         table_prefix: &str,
-        output_path: PathBuf
+        output_path: PathBuf,
     ) -> TableMetadata {
         let table_name_with_separator = if table_name == main_table_name {
             "".to_string()
@@ -204,7 +203,7 @@ impl TableMetadata {
             order: vec![],
             field_titles: vec![],
             table_name_with_separator,
-            output_path
+            output_path,
         }
     }
 }
@@ -226,7 +225,7 @@ impl Write for JLWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf == [b'\n'] {
             if let Err(e) = self.buf_sender.send(self.buf.clone()) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, e))
+                return Err(io::Error::new(io::ErrorKind::Interrupted, e));
             }
             self.buf.clear();
             Ok(buf.len())
@@ -240,11 +239,8 @@ impl Write for JLWriter {
     }
 }
 
-
 impl FlatFiles {
-    pub fn new_with_defaults(
-        output_dir: String,
-    ) -> Result<Self> {
+    pub fn new_with_defaults(output_dir: String) -> Result<Self> {
         return FlatFiles::new(
             output_dir,
             true,
@@ -257,7 +253,7 @@ impl FlatFiles {
             "".to_string(),
             "_".to_string(),
             "".to_string(),
-        )
+        );
     }
 
     pub fn new(
@@ -319,17 +315,14 @@ impl FlatFiles {
 
         if !schema.is_empty() {
             flat_files.set_schema(schema, schema_titles)?;
-        }; 
+        };
 
         flat_files.set_emit_obj(emit_obj)?;
 
         Ok(flat_files)
     }
 
-    fn set_csv(
-        &mut self,
-        csv: bool
-    ) -> Result<()> {
+    fn set_csv(&mut self, csv: bool) -> Result<()> {
         self.csv = csv;
         let csv_path = self.output_path.join("csv");
         if csv {
@@ -348,12 +341,7 @@ impl FlatFiles {
         Ok(())
     }
 
-    fn set_schema(
-        &mut self,
-        schema: String,
-        schema_titles: String
-    ) -> Result<()> {
-
+    fn set_schema(&mut self, schema: String, schema_titles: String) -> Result<()> {
         let schema_analysis =
             schema_analysis::schema_analysis(&schema, &self.path_separator, schema_titles)
                 .context(JSONRefError {})?;
@@ -362,16 +350,12 @@ impl FlatFiles {
         Ok(())
     }
 
-    fn set_emit_obj(
-        &mut self,
-        emit_obj: Vec<Vec<String>>
-    ) -> Result<()> {
+    fn set_emit_obj(&mut self, emit_obj: Vec<Vec<String>>) -> Result<()> {
         for emit_vec in emit_obj {
             self.emit_obj.push(SmallVec::from_vec(emit_vec))
         }
         Ok(())
     }
-        
 
     fn handle_obj(
         &mut self,
@@ -383,7 +367,6 @@ impl FlatFiles {
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
         one_to_one_key: bool,
     ) -> Option<Map<String, Value>> {
-
         let mut table_name = String::new();
         if emit {
             table_name = [
@@ -620,18 +603,15 @@ impl FlatFiles {
                         table.clone(),
                         TmpCSVWriter::Disk(
                             WriterBuilder::new()
-                            .flexible(true)
-                            .from_path(output_path.clone())
-                            .context(FlattererCSVWriteError {
-                                filepath: &output_path,
-                            })?,
-                         )
+                                .flexible(true)
+                                .from_path(output_path.clone())
+                                .context(FlattererCSVWriteError {
+                                    filepath: &output_path,
+                                })?,
+                        ),
                     );
                 } else {
-                    self.tmp_csvs.insert(
-                        table.clone(),
-                        TmpCSVWriter::None()
-                    );
+                    self.tmp_csvs.insert(table.clone(), TmpCSVWriter::None());
                 }
             }
 
@@ -644,7 +624,7 @@ impl FlatFiles {
                         &self.main_table_name,
                         &self.path_separator,
                         &self.table_prefix,
-                        output_path
+                        output_path,
                     ),
                 );
             }
@@ -692,8 +672,9 @@ impl FlatFiles {
                 }
                 if !output_row.is_empty() {
                     table_metadata.rows += 1;
-                    if let TmpCSVWriter::Disk(writer) =  writer{
-                        writer.write_record(&output_row)
+                    if let TmpCSVWriter::Disk(writer) = writer {
+                        writer
+                            .write_record(&output_row)
                             .context(FlattererCSVWriteError {
                                 filepath: &table_metadata.output_path,
                             })?;
@@ -737,7 +718,9 @@ impl FlatFiles {
             })?;
 
             if !self.table_metadata.contains_key(&row.table_name) {
-                let output_path = self.output_path.join(format!("tmp/{}.csv", &row.table_name));
+                let output_path = self
+                    .output_path
+                    .join(format!("tmp/{}.csv", &row.table_name));
                 self.table_metadata.insert(
                     row.table_name.clone(),
                     TableMetadata::new(
@@ -745,7 +728,7 @@ impl FlatFiles {
                         &self.main_table_name,
                         &self.path_separator,
                         &self.table_prefix,
-                        output_path
+                        output_path,
                     ),
                 );
             }
@@ -1006,7 +989,7 @@ impl FlatFiles {
 
             for (num, row) in csv_reader.into_byte_records().enumerate() {
                 if self.preview != 0 && num == self.preview {
-                    break
+                    break;
                 }
                 let this_row = row.context(FlattererCSVWriteError {
                     filepath: &filepath,
@@ -1411,18 +1394,8 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let output_dir = tmp_dir.path().join("output");
         let output_path = output_dir.to_string_lossy().into_owned();
-        let flat_files = FlatFiles::new(
-            output_path.clone(),
-            true,
-            true,
-            true,
-            "main".to_string(),
-            vec![],
-            false,
-            "".to_string(),
-            "".to_string(),
-            "_".to_string(),
-            "".to_string(),
+        let flat_files = FlatFiles::new_with_defaults(
+            output_path.clone()
         )
         .unwrap();
         flatten(
@@ -1432,18 +1405,20 @@ mod tests {
         )
         .unwrap();
 
-        for test_file in [
-            "data_package.json",
-            "fields.csv",
-            "csv/main.csv",
-            "csv/platforms.csv",
-        ] {
-            let expected =
-                read_to_string(format!("fixtures/expected_basic/{}", test_file)).unwrap();
-            println!("{}", expected);
-            let output = read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
-            println!("{}", output);
-            assert_eq!(expected, output);
+        for test_file in ["data_package.json"] {
+            let value: Value = serde_json::from_reader(
+                File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
+            )
+            .unwrap();
+            insta::assert_yaml_snapshot!(&value);
+        }
+
+        for test_file in ["fields.csv", "csv/main.csv", "csv/platforms.csv"] {
+            let file_as_string =
+                read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
+
+            let output: Vec<_> = file_as_string.lines().collect();
+            insta::assert_yaml_snapshot!(output);
         }
     }
 
@@ -1452,20 +1427,8 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let output_dir = tmp_dir.path().join("output");
         let output_path = output_dir.to_string_lossy().into_owned();
-        let flat_files = FlatFiles::new(
-            output_path.clone(),
-            true,
-            true,
-            true,
-            "main".to_string(),
-            vec![],
-            true,
-            "".to_string(),
-            "".to_string(),
-            "_".to_string(),
-            "".to_string(),
-        )
-        .unwrap();
+        let mut flat_files = FlatFiles::new_with_defaults(output_path.clone()).unwrap();
+        flat_files.inline_one_to_one = true;
         flatten(
             BufReader::new(File::open("fixtures/basic.json").unwrap()),
             flat_files,
@@ -1473,18 +1436,20 @@ mod tests {
         )
         .unwrap();
 
-        for test_file in [
-            "data_package.json",
-            "fields.csv",
-            "csv/main.csv",
-            "csv/platforms.csv",
-        ] {
-            let expected =
-                read_to_string(format!("fixtures/expected_basic_inline/{}", test_file)).unwrap();
-            println!("{}", expected);
-            let output = read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
-            println!("{}", output);
-            assert!(expected == output);
+        for test_file in ["data_package.json"] {
+            let value: Value = serde_json::from_reader(
+                File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
+            )
+            .unwrap();
+            insta::assert_yaml_snapshot!(&value);
+        }
+
+        for test_file in ["fields.csv", "csv/main.csv", "csv/platforms.csv"] {
+            let file_as_string =
+                read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
+
+            let output: Vec<_> = file_as_string.lines().collect();
+            insta::assert_yaml_snapshot!(output);
         }
     }
 
