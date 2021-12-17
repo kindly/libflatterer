@@ -249,7 +249,7 @@ impl Write for JLWriter {
 
 impl FlatFiles {
     pub fn new_with_defaults(output_dir: String) -> Result<Self> {
-        return FlatFiles::new(
+        FlatFiles::new(
             output_dir,
             true,
             false,
@@ -261,7 +261,7 @@ impl FlatFiles {
             "".to_string(),
             "_".to_string(),
             "".to_string(),
-        );
+        )
     }
 
     pub fn new(
@@ -341,12 +341,10 @@ impl FlatFiles {
                     filename: csv_path.to_string_lossy(),
                 })?;
             }
-        } else {
-            if csv_path.is_dir() {
-                remove_dir_all(&csv_path).context(FlattererRemoveDir {
-                    filename: csv_path.to_string_lossy(),
-                })?;
-            }
+        } else if csv_path.is_dir() {
+            remove_dir_all(&csv_path).context(FlattererRemoveDir {
+                filename: csv_path.to_string_lossy(),
+            })?;
         }
         Ok(())
     }
@@ -1393,7 +1391,7 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
         return last_part
     }
     let mut new_parts: Vec<String> = vec![];
-    for part in parts[..parts.len() - 1].into_iter() {
+    for part in parts[..parts.len() - 1].iter() {
         let new_part = part[..len_of_part].to_string();
         new_parts.push(new_part);
     }
