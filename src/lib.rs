@@ -1094,7 +1094,13 @@ impl FlatFiles {
                 continue;
             }
             let mut new_table_title = table_title.clone();
-            new_table_title.truncate(31);
+
+            if table_name != table_title {
+                new_table_title.truncate(31);
+            } else {
+                new_table_title = truncate_xlsx_title(new_table_title, &self.path_separator);
+            }
+
             let mut worksheet = workbook
                 .add_worksheet(Some(&new_table_title))
                 .context(FlattererXLSXError {})?;
@@ -1363,6 +1369,39 @@ fn value_convert(
         }
     }
 }
+
+
+pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
+    let parts: Vec<&str> = title.split(seperator).collect();
+    if parts.len() == 1 || title.len() <= 31 {
+        title.truncate(31);
+        return title
+    }
+
+    let mut last_part = parts.last().unwrap().to_string();
+
+    let length_of_last_part = parts.last().unwrap().len();
+
+    let rest = 31 - std::cmp::min(length_of_last_part, 31);
+
+    let max_len_of_part_with_sep = rest / (parts.len() - 1) ;
+
+    let len_of_part = max_len_of_part_with_sep - std::cmp::min(max_len_of_part_with_sep, seperator.len());
+
+    if len_of_part < 1 {
+        last_part.truncate(31);
+        return last_part
+    }
+    let mut new_parts: Vec<String> = vec![];
+    for part in parts[..parts.len() - 1].into_iter() {
+        let new_part = part[..len_of_part].to_string();
+        new_parts.push(new_part);
+    }
+    new_parts.push(last_part);
+
+    new_parts.join(seperator)
+}
+
 
 pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<()> {
     let (value_sender, value_receiver) = bounded(1000);
@@ -1673,6 +1712,31 @@ mod tests {
 
             let output: Vec<_> = file_as_string.lines().collect();
             insta::assert_yaml_snapshot!(output);
+        }
+    }
+
+    #[test]
+    fn test_xlxs_title() {
+        let cases = vec![
+            ("a title",
+             "a title"),
+            ("this title is too long so it needs to be truncated",
+             "this title is too long so it ne"),
+            ("this_title_is_too_long_so_it_needs_to_be_truncated",
+             "t_t_i_t_l_s_i_n_t_b_truncated"),
+            ("this_title_is_too_long_so_it_needs_to_be_truuuuuuuuuuncated",
+             "truuuuuuuuuuncated"), // can only take last part
+            ("this_title_is_too_long_so_it_needs_to_be_truuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuncated",
+             "truuuuuuuuuuuuuuuuuuuuuuuuuuuuu"), // can only take last part truncated
+            ("contracts_implementation_transactions_payer",
+             "contrac_impleme_transac_payer"),
+            ("contracts_implementation_transactions_payee",
+             "contrac_impleme_transac_payee"),
+        ];
+
+        for case in cases {
+            let truncated_title = truncate_xlsx_title(case.0.to_string(), "_");
+            assert_eq!(truncated_title, case.1);
         }
     }
 
