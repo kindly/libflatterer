@@ -159,6 +159,8 @@ pub struct FlatFiles {
     order_map: HashMap<String, usize>,
     field_titles_map: HashMap<String, String>,
     pub preview: usize,
+    only_tables: bool,
+    table_order: HashMap<String, String>,
 }
 
 #[derive(Serialize, Debug)]
@@ -214,6 +216,12 @@ struct FieldsRecord {
     field_name: String,
     field_type: String,
     field_title: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TablesRecord {
+    table_name: String,
+    table_title: String,
 }
 
 struct JLWriter {
@@ -308,7 +316,9 @@ impl FlatFiles {
             path_separator,
             order_map: HashMap::new(),
             field_titles_map: HashMap::new(),
-            preview: 0
+            preview: 0,
+            only_tables: false,
+            table_order: HashMap::new()
         };
 
         flat_files.set_csv(csv)?;
@@ -627,6 +637,9 @@ impl FlatFiles {
                         output_path,
                     ),
                 );
+                if !self.only_tables {
+                    self.table_order.insert(table.clone(), table.clone());
+                }
             }
 
             let table_metadata = self.table_metadata.get_mut(table).unwrap(); //key known
@@ -703,14 +716,26 @@ impl FlatFiles {
         }
     }
 
+    pub fn use_tables_csv(&mut self, filepath: String, only_tables: bool) -> Result<()> {
+        self.only_tables = only_tables;
+        let mut tables_reader = Reader::from_path(&filepath).context(FlattererCSVReadError {
+            filepath: &filepath,
+        })?;
+        for row in tables_reader.deserialize() {
+            let row: TablesRecord = row.context(FlattererCSVReadError {
+                filepath: &filepath,
+            })?;
+            self.table_order.insert(row.table_name, row.table_title);
+        }
+        Ok(())
+    }
+
     pub fn use_fields_csv(&mut self, filepath: String, only_fields: bool) -> Result<()> {
         let mut fields_reader = Reader::from_path(&filepath).context(FlattererCSVReadError {
             filepath: &filepath,
         })?;
 
-        if only_fields {
-            self.only_fields = true;
-        }
+        self.only_fields = only_fields;
 
         for row in fields_reader.deserialize() {
             let row: FieldsRecord = row.context(FlattererCSVReadError {
@@ -731,6 +756,9 @@ impl FlatFiles {
                         output_path,
                     ),
                 );
+                if !self.only_tables {
+                    self.table_order.insert(row.table_name.clone(), row.table_name.clone());
+                }
             }
             let table_metadata = self.table_metadata.get_mut(&row.table_name).unwrap(); //key known
             table_metadata.fields.push(row.field_name.clone());
@@ -811,6 +839,9 @@ impl FlatFiles {
         self.mark_ignore();
         self.determine_order();
 
+        //remove tables that should not be there from table order.
+        self.table_order.retain(|key, _| self.table_metadata.contains_key(key));
+
         for (file, tmp_csv) in self.tmp_csvs.iter_mut() {
             if let TmpCSVWriter::Disk(tmp_csv) = tmp_csv {
                 tmp_csv.flush().context(FlattererFileWriteError {
@@ -836,6 +867,7 @@ impl FlatFiles {
 
         self.write_data_package()?;
         self.write_fields_csv()?;
+        self.write_tables_csv()?;
 
         Ok(())
     }
@@ -849,7 +881,7 @@ impl FlatFiles {
 
         let mut resources = vec![];
 
-        for table_name in self.table_metadata.keys() {
+        for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap();
             let mut fields = vec![];
             if metadata.rows == 0 || metadata.ignore {
@@ -871,7 +903,7 @@ impl FlatFiles {
 
             let mut resource = json!({
                 "profile": "tabular-data-resource",
-                "name": table_name,
+                "name": table_title,
                 "schema": {
                     "fields": fields,
                     "primaryKey": "_link"
@@ -899,6 +931,33 @@ impl FlatFiles {
         Ok(())
     }
 
+    pub fn write_tables_csv(&mut self) -> Result<()> {
+        let filepath = self.output_path.join("tables.csv");
+        let mut table_writer = Writer::from_path(&filepath).context(FlattererCSVWriteError {
+            filepath: filepath.clone(),
+        })?;
+        table_writer
+            .write_record([
+                "table_name",
+                "table_title",
+            ])
+            .context(FlattererCSVWriteError {
+                filepath: filepath.clone(),
+            })?;
+            for (table_name, table_title) in self.table_order.iter() {
+                table_writer
+                    .write_record([
+                        table_name,
+                        table_title
+                    ])
+                    .context(FlattererCSVWriteError {
+                        filepath: filepath.clone(),
+                    })?;
+            }
+
+        Ok(())
+    }
+
     pub fn write_fields_csv(&mut self) -> Result<()> {
         let filepath = self.output_path.join("fields.csv");
         let mut fields_writer = Writer::from_path(&filepath).context(FlattererCSVWriteError {
@@ -916,7 +975,7 @@ impl FlatFiles {
             .context(FlattererCSVWriteError {
                 filepath: filepath.clone(),
             })?;
-        for table_name in self.table_metadata.keys() {
+        for table_name in self.table_order.keys() {
             let metadata = self.table_metadata.get(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -947,7 +1006,7 @@ impl FlatFiles {
         let tmp_path = self.output_path.join("tmp");
         let csv_path = self.output_path.join("csv");
 
-        for table_name in self.tmp_csvs.keys() {
+        for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap(); //key known
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -962,7 +1021,7 @@ impl FlatFiles {
                     filepath: reader_filepath.to_string_lossy(),
                 })?;
 
-            let filepath = csv_path.join(format!("{}.csv", table_name));
+            let filepath = csv_path.join(format!("{}.csv", table_title));
             let mut csv_writer = WriterBuilder::new().from_path(filepath.clone()).context(
                 FlattererCSVWriteError {
                     filepath: filepath.clone(),
@@ -1029,15 +1088,15 @@ impl FlatFiles {
             false,
         );
 
-        for table_name in self.tmp_csvs.keys() {
+        for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap(); //key known
             if metadata.rows == 0 || metadata.ignore {
                 continue;
             }
-            let mut new_table_name = table_name.clone();
-            new_table_name.truncate(31);
+            let mut new_table_title = table_title.clone();
+            new_table_title.truncate(31);
             let mut worksheet = workbook
-                .add_worksheet(Some(&new_table_name))
+                .add_worksheet(Some(&new_table_title))
                 .context(FlattererXLSXError {})?;
 
             let filepath = tmp_path.join(format!("{}.csv", table_name));
@@ -1413,7 +1472,7 @@ mod tests {
             insta::assert_yaml_snapshot!(&value);
         }
 
-        for test_file in ["fields.csv", "csv/main.csv", "csv/platforms.csv"] {
+        for test_file in ["fields.csv", "csv/main.csv", "csv/platforms.csv", "tables.csv"] {
             let file_as_string =
                 read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
 
@@ -1444,7 +1503,7 @@ mod tests {
             insta::assert_yaml_snapshot!(&value);
         }
 
-        for test_file in ["fields.csv", "csv/main.csv", "csv/platforms.csv"] {
+        for test_file in ["fields.csv", "csv/main.csv", "csv/platforms.csv", "tables.csv"] {
             let file_as_string =
                 read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
 
@@ -1580,4 +1639,41 @@ mod tests {
         insta::assert_yaml_snapshot!(&flat_files.table_metadata,
                                      {".*.output_path" => "[path]"});
     }
+
+    #[test]
+    fn test_tables_csv() {
+        let tmp_dir = TempDir::new().unwrap();
+        let output_dir = tmp_dir.path().join("output");
+        let output_path = output_dir.to_string_lossy().into_owned();
+        let mut flat_files = FlatFiles::new_with_defaults(
+            output_path.clone()
+        )
+        .unwrap();
+
+        flat_files.use_tables_csv("fixtures/reorder_remove_tables.csv".to_string(), true).unwrap();
+
+        flatten(
+            BufReader::new(File::open("fixtures/basic.json").unwrap()),
+            flat_files,
+            vec![],
+        )
+        .unwrap();
+
+        for test_file in ["data_package.json"] {
+            let value: Value = serde_json::from_reader(
+                File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
+            )
+            .unwrap();
+            insta::assert_yaml_snapshot!(&value);
+        }
+
+        for test_file in ["fields.csv", "csv/Devs.csv", "csv/Games.csv", "tables.csv"] {
+            let file_as_string =
+                read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
+
+            let output: Vec<_> = file_as_string.lines().collect();
+            insta::assert_yaml_snapshot!(output);
+        }
+    }
+
 }
