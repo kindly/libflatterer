@@ -76,6 +76,10 @@ pub enum Error {
     },
     #[snafu(display("Directory `{}` already exists.", dir.to_string_lossy()))]
     FlattererDirExists { dir: PathBuf },
+    #[snafu(display("Output XLSX will have too may rows {} in sheet `{}`, maximum allowed 1048576", rows, sheet))]
+    XLSXTooManyRows { rows: u32, sheet: String },
+    #[snafu(display("Output XLSX will have too may columns {} in sheet `{}`, maximum allowed 65536", columns, sheet))]
+    XLSXTooManyColumns { columns: usize, sheet: String },
     #[snafu(display("Json Dereferencing Failed"))]
     JSONRefError { source: schema_analysis::Error },
     #[snafu(display("Error writing to CSV file {}", filepath.to_string_lossy()))]
@@ -1085,6 +1089,15 @@ impl FlatFiles {
             Some(&tmp_path.to_string_lossy()),
             false,
         );
+
+        for (table_name, metadata) in self.table_metadata.iter() {
+            if metadata.rows > 1048575 {
+                return Err(Error::XLSXTooManyRows {rows: metadata.rows, sheet: table_name.clone()})
+            }
+            if metadata.rows > 65536  {
+                return Err(Error::XLSXTooManyColumns {columns: metadata.fields.len(), sheet: table_name.clone()})
+            }
+        }
 
         for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap(); //key known
