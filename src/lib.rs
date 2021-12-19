@@ -1644,6 +1644,26 @@ mod tests {
     }
 
     #[test]
+    fn test_array_element() {
+        for extention in ["json", "jl"] {
+            test_output(
+                &format!("fixtures/invalid_array_element.{}", extention),
+                vec![],
+                json!({"error_text": "Invalid JSON due to the following error:"}),
+            );
+        }
+    }
+
+    #[test]
+    fn test_invalid_json_lines() {
+        test_output(
+            "fixtures/invalid_json_lines.jl",
+            vec![],
+            json!({"error_text": "Invalid JSON due to the following error:"}),
+        );
+    }
+
+    #[test]
     fn check_nesting() {
         let myjson = json!({
             "a": "a",
