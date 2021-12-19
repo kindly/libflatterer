@@ -76,9 +76,17 @@ pub enum Error {
     },
     #[snafu(display("Directory `{}` already exists.", dir.to_string_lossy()))]
     FlattererDirExists { dir: PathBuf },
-    #[snafu(display("Output XLSX will have too may rows {} in sheet `{}`, maximum allowed 1048576", rows, sheet))]
+    #[snafu(display(
+        "Output XLSX will have too may rows {} in sheet `{}`, maximum allowed 1048576",
+        rows,
+        sheet
+    ))]
     XLSXTooManyRows { rows: u32, sheet: String },
-    #[snafu(display("Output XLSX will have too may columns {} in sheet `{}`, maximum allowed 65536", columns, sheet))]
+    #[snafu(display(
+        "Output XLSX will have too may columns {} in sheet `{}`, maximum allowed 65536",
+        columns,
+        sheet
+    ))]
     XLSXTooManyColumns { columns: usize, sheet: String },
     #[snafu(display("Json Dereferencing Failed"))]
     JSONRefError { source: schema_analysis::Error },
@@ -106,7 +114,7 @@ pub enum Error {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display(""))]
+    #[snafu(display("Invalid JSON due to the following error: {}", source))]
     SerdeReadError { source: serde_json::Error },
     #[snafu(display("Error with writing XLSX file"))]
     FlattererXLSXError { source: xlsxwriter::XlsxError },
@@ -759,7 +767,8 @@ impl FlatFiles {
                     ),
                 );
                 if !self.only_tables {
-                    self.table_order.insert(row.table_name.clone(), row.table_name.clone());
+                    self.table_order
+                        .insert(row.table_name.clone(), row.table_name.clone());
                 }
             }
             let table_metadata = self.table_metadata.get_mut(&row.table_name).unwrap(); //key known
@@ -842,7 +851,8 @@ impl FlatFiles {
         self.determine_order();
 
         //remove tables that should not be there from table order.
-        self.table_order.retain(|key, _| self.table_metadata.contains_key(key));
+        self.table_order
+            .retain(|key, _| self.table_metadata.contains_key(key));
 
         for (file, tmp_csv) in self.tmp_csvs.iter_mut() {
             if let TmpCSVWriter::Disk(tmp_csv) = tmp_csv {
@@ -939,23 +949,17 @@ impl FlatFiles {
             filepath: filepath.clone(),
         })?;
         table_writer
-            .write_record([
-                "table_name",
-                "table_title",
-            ])
+            .write_record(["table_name", "table_title"])
             .context(FlattererCSVWriteError {
                 filepath: filepath.clone(),
             })?;
-            for (table_name, table_title) in self.table_order.iter() {
-                table_writer
-                    .write_record([
-                        table_name,
-                        table_title
-                    ])
-                    .context(FlattererCSVWriteError {
-                        filepath: filepath.clone(),
-                    })?;
-            }
+        for (table_name, table_title) in self.table_order.iter() {
+            table_writer
+                .write_record([table_name, table_title])
+                .context(FlattererCSVWriteError {
+                    filepath: filepath.clone(),
+                })?;
+        }
 
         Ok(())
     }
@@ -1092,10 +1096,16 @@ impl FlatFiles {
 
         for (table_name, metadata) in self.table_metadata.iter() {
             if metadata.rows > 1048575 {
-                return Err(Error::XLSXTooManyRows {rows: metadata.rows, sheet: table_name.clone()})
+                return Err(Error::XLSXTooManyRows {
+                    rows: metadata.rows,
+                    sheet: table_name.clone(),
+                });
             }
-            if metadata.rows > 65536  {
-                return Err(Error::XLSXTooManyColumns {columns: metadata.fields.len(), sheet: table_name.clone()})
+            if metadata.rows > 65536 {
+                return Err(Error::XLSXTooManyColumns {
+                    columns: metadata.fields.len(),
+                    sheet: table_name.clone(),
+                });
             }
         }
 
@@ -1349,7 +1359,7 @@ fn value_convert(
             val
         }
         Value::Null => {
-            if value_type == "" {
+            if value_type.is_empty() {
                 field_type[num] = "null".to_string();
             }
             "".to_string()
@@ -1381,12 +1391,11 @@ fn value_convert(
     }
 }
 
-
 pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     let parts: Vec<&str> = title.split(seperator).collect();
     if parts.len() == 1 || title.len() <= 31 {
         title.truncate(31);
-        return title
+        return title;
     }
 
     let mut last_part = parts.last().unwrap().to_string();
@@ -1395,13 +1404,14 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
 
     let rest = 31 - std::cmp::min(length_of_last_part, 31);
 
-    let max_len_of_part_with_sep = rest / (parts.len() - 1) ;
+    let max_len_of_part_with_sep = rest / (parts.len() - 1);
 
-    let len_of_part = max_len_of_part_with_sep - std::cmp::min(max_len_of_part_with_sep, seperator.len());
+    let len_of_part =
+        max_len_of_part_with_sep - std::cmp::min(max_len_of_part_with_sep, seperator.len());
 
     if len_of_part < 1 {
         last_part.truncate(31);
-        return last_part
+        return last_part;
     }
     let mut new_parts: Vec<String> = vec![];
     for part in parts[..parts.len() - 1].iter() {
@@ -1413,9 +1423,9 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     new_parts.join(seperator)
 }
 
-
 pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<()> {
     let (value_sender, value_receiver) = bounded(1000);
+    let output_path = flat_files.output_path.clone();
 
     let thread = thread::spawn(move || -> Result<()> {
         for value in value_receiver {
@@ -1429,6 +1439,11 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<(
 
     let stream = Deserializer::from_reader(input).into_iter::<Value>();
     for value_result in stream {
+        if value_result.is_err() {
+            remove_dir_all(&output_path).context(FlattererRemoveDir {
+                filename: output_path.to_string_lossy(),
+            })?;
+        }
         let value = value_result.context(SerdeReadError {})?;
         value_sender.send(value).context(ChannelSendError {})?;
     }
@@ -1437,6 +1452,9 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<(
     match thread.join() {
         Ok(result) => {
             if let Err(err) = result {
+                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                    filename: output_path.to_string_lossy(),
+                })?;
                 return Err(err);
             }
         }
@@ -1452,6 +1470,8 @@ pub fn flatten<R: Read>(
     selectors: Vec<Selector>,
 ) -> Result<()> {
     let (buf_sender, buf_receiver): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(1000);
+
+    let output_path = flat_files.output_path.clone();
 
     let thread = thread::spawn(move || -> Result<()> {
         for buf in buf_receiver.iter() {
@@ -1473,9 +1493,27 @@ pub fn flatten<R: Read>(
     let mut parser = Parser::new(&mut handler);
 
     if let Err(error) = parser.parse(&mut input) {
+        remove_dir_all(&output_path).context(FlattererRemoveDir {
+            filename: output_path.to_string_lossy(),
+        })?;
         return Err(Error::YAJLishParseError {
-            error: format!("{}", error),
+            error: format!("Invalid JSON due to the following error: {}", error),
         });
+    }
+
+    if let Err(error) = parser.finish_parse() {
+        // never seems to reach parse complete on stream data
+        if !error
+            .to_string()
+            .contains("Did not reach a ParseComplete status")
+        {
+            remove_dir_all(&output_path).context(FlattererRemoveDir {
+                filename: output_path.to_string_lossy(),
+            })?;
+            return Err(Error::YAJLishParseError {
+                error: format!("Invalid JSON due to the following error: {}", error),
+            });
+        }
     }
 
     drop(jl_writer);
@@ -1483,6 +1521,9 @@ pub fn flatten<R: Read>(
     match thread.join() {
         Ok(result) => {
             if let Err(err) = result {
+                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                    filename: output_path.to_string_lossy(),
+                })?;
                 return Err(err);
             }
         }
@@ -1498,35 +1539,45 @@ mod tests {
     use std::fs::read_to_string;
     use tempfile::TempDir;
 
-    fn test_output (file: &str, output: Vec<&str>, options: Value) {
+    fn test_output(file: &str, output: Vec<&str>, options: Value) {
         let tmp_dir = TempDir::new().unwrap();
         let output_dir = tmp_dir.path().join("output");
         let output_path = output_dir.to_string_lossy().into_owned();
-        let mut flat_files = FlatFiles::new_with_defaults(
-            output_path.clone()
-        )
-        .unwrap();
+        let mut flat_files = FlatFiles::new_with_defaults(output_path.clone()).unwrap();
 
-        if let Some(inline) =  options["inline"].as_bool(){
+        if let Some(inline) = options["inline"].as_bool() {
             flat_files.inline_one_to_one = inline
         }
-        if let Some(tables_csv) =  options["tables_csv"].as_str(){
-            flat_files.use_tables_csv(tables_csv.to_string(), true).unwrap();
+        if let Some(tables_csv) = options["tables_csv"].as_str() {
+            flat_files
+                .use_tables_csv(tables_csv.to_string(), true)
+                .unwrap();
         }
 
+        let result;
+
         if file.ends_with(".json") {
-            flatten(
+            result = flatten(
                 BufReader::new(File::open(file).unwrap()),
                 flat_files,
                 vec![],
-            )
-            .unwrap();
+            );
         } else {
-            flatten_from_jl(
-                BufReader::new(File::open(file).unwrap()),
-                flat_files,
-            )
-            .unwrap();
+            result = flatten_from_jl(BufReader::new(File::open(file).unwrap()), flat_files);
+        }
+
+        if let Err(error) = result {
+            if let Some(error_text) = options["error_text"].as_str() {
+                println!("{}", error.to_string());
+                assert!(error.to_string().contains(error_text))
+            } else {
+                panic!(
+                    "Error raised and there is no error_text to match it. Error was \n{}",
+                    error
+                );
+            }
+            assert!(!output_dir.exists());
+            return;
         }
 
         let mut test_files = vec!["data_package.json", "fields.csv", "tables.csv"];
@@ -1550,22 +1601,45 @@ mod tests {
         }
     }
 
-
     #[test]
     fn full_test() {
         for extention in ["json", "jl"] {
-            test_output(&format!("fixtures/basic.{}", extention), 
-                        vec!["csv/main.csv", "csv/platforms.csv"], 
-                        json!({}))
+            test_output(
+                &format!("fixtures/basic.{}", extention),
+                vec!["csv/main.csv", "csv/platforms.csv"],
+                json!({}),
+            )
         }
     }
 
     #[test]
     fn full_test_inline() {
         for extention in ["json", "jl"] {
-            test_output(&format!("fixtures/basic.{}", extention), 
-                        vec!["csv/main.csv", "csv/platforms.csv"], 
-                        json!({"inline": true}));
+            test_output(
+                &format!("fixtures/basic.{}", extention),
+                vec!["csv/main.csv", "csv/platforms.csv"],
+                json!({"inline": true}),
+            );
+        }
+    }
+
+    #[test]
+    fn test_tables_csv() {
+        test_output(
+            "fixtures/basic.json",
+            vec!["csv/Devs.csv", "csv/Games.csv"],
+            json!({"tables_csv": "fixtures/reorder_remove_tables.csv"}),
+        );
+    }
+
+    #[test]
+    fn test_invalid() {
+        for extention in ["json", "jl"] {
+            test_output(
+                &format!("fixtures/invalid.{}", extention),
+                vec![],
+                json!({"error_text": "Invalid JSON due to the following error:"}),
+            );
         }
     }
 
@@ -1698,15 +1772,9 @@ mod tests {
     }
 
     #[test]
-    fn test_tables_csv() {
-        test_output("fixtures/basic.json", 
-                    vec!["csv/Devs.csv", "csv/Games.csv"], 
-                    json!({"tables_csv": "fixtures/reorder_remove_tables.csv"}));
-    }
-
-    #[test]
     fn test_xlxs_title() {
-        let cases = vec![
+        let cases =
+            vec![
             ("a title",
              "a title"),
             ("this title is too long so it needs to be truncated",
@@ -1728,5 +1796,4 @@ mod tests {
             assert_eq!(truncated_title, case.1);
         }
     }
-
 }
