@@ -1514,12 +1514,20 @@ mod tests {
             flat_files.use_tables_csv(tables_csv.to_string(), true).unwrap();
         }
 
-        flatten(
-            BufReader::new(File::open(file).unwrap()),
-            flat_files,
-            vec![],
-        )
-        .unwrap();
+        if file.ends_with(".json") {
+            flatten(
+                BufReader::new(File::open(file).unwrap()),
+                flat_files,
+                vec![],
+            )
+            .unwrap();
+        } else {
+            flatten_from_jl(
+                BufReader::new(File::open(file).unwrap()),
+                flat_files,
+            )
+            .unwrap();
+        }
 
         let mut test_files = vec!["data_package.json", "fields.csv", "tables.csv"];
 
@@ -1545,16 +1553,20 @@ mod tests {
 
     #[test]
     fn full_test() {
-        test_output("fixtures/basic.json", 
-                    vec!["csv/main.csv", "csv/platforms.csv"], 
-                    json!({}))
+        for extention in ["json", "jl"] {
+            test_output(&format!("fixtures/basic.{}", extention), 
+                        vec!["csv/main.csv", "csv/platforms.csv"], 
+                        json!({}))
+        }
     }
 
     #[test]
     fn full_test_inline() {
-        test_output("fixtures/basic.json", 
-                    vec!["csv/main.csv", "csv/platforms.csv"], 
-                    json!({"inline": true}));
+        for extention in ["json", "jl"] {
+            test_output(&format!("fixtures/basic.{}", extention), 
+                        vec!["csv/main.csv", "csv/platforms.csv"], 
+                        json!({"inline": true}));
+        }
     }
 
     #[test]
@@ -1688,7 +1700,7 @@ mod tests {
     #[test]
     fn test_tables_csv() {
         test_output("fixtures/basic.json", 
-                    vec!["csv/main.csv", "csv/platforms.csv"], 
+                    vec!["csv/Devs.csv", "csv/Games.csv"], 
                     json!({"tables_csv": "fixtures/reorder_remove_tables.csv"}));
     }
 
