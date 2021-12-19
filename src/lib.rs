@@ -1339,7 +1339,7 @@ fn value_convert(
 
     match value {
         Value::String(val) => {
-            if value_type != &"text".to_string() {
+            if value_type != "text" {
                 if date_re.is_match(&val) {
                     field_type[num] = "date".to_string();
                 } else {
@@ -1349,31 +1349,31 @@ fn value_convert(
             val
         }
         Value::Null => {
-            if value_type == &"".to_string() {
+            if value_type == "" {
                 field_type[num] = "null".to_string();
             }
             "".to_string()
         }
         Value::Number(number) => {
-            if value_type != &"text".to_string() {
+            if value_type != "text" {
                 field_type[num] = "number".to_string();
             }
             number.to_string()
         }
         Value::Bool(bool) => {
-            if value_type != &"text".to_string() {
+            if value_type != "text" {
                 field_type[num] = "boolean".to_string();
             }
             bool.to_string()
         }
         Value::Array(_) => {
-            if value_type != &"text".to_string() {
+            if value_type != "text" {
                 field_type[num] = "text".to_string();
             }
             format!("{}", value)
         }
         Value::Object(_) => {
-            if value_type != &"text".to_string() {
+            if value_type != "text" {
                 field_type[num] = "text".to_string();
             }
             format!("{}", value)
@@ -1498,68 +1498,63 @@ mod tests {
     use std::fs::read_to_string;
     use tempfile::TempDir;
 
-    #[test]
-    fn full_test() {
+    fn test_output (file: &str, output: Vec<&str>, options: Value) {
         let tmp_dir = TempDir::new().unwrap();
         let output_dir = tmp_dir.path().join("output");
         let output_path = output_dir.to_string_lossy().into_owned();
-        let flat_files = FlatFiles::new_with_defaults(
+        let mut flat_files = FlatFiles::new_with_defaults(
             output_path.clone()
         )
         .unwrap();
+
+        if let Some(inline) =  options["inline"].as_bool(){
+            flat_files.inline_one_to_one = inline
+        }
+        if let Some(tables_csv) =  options["tables_csv"].as_str(){
+            flat_files.use_tables_csv(tables_csv.to_string(), true).unwrap();
+        }
+
         flatten(
-            BufReader::new(File::open("fixtures/basic.json").unwrap()),
+            BufReader::new(File::open(file).unwrap()),
             flat_files,
             vec![],
         )
         .unwrap();
 
-        for test_file in ["data_package.json"] {
-            let value: Value = serde_json::from_reader(
-                File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
-            )
-            .unwrap();
-            insta::assert_yaml_snapshot!(&value);
-        }
+        let mut test_files = vec!["data_package.json", "fields.csv", "tables.csv"];
 
-        for test_file in ["fields.csv", "csv/main.csv", "csv/platforms.csv", "tables.csv"] {
-            let file_as_string =
-                read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
+        test_files.extend(output);
 
-            let output: Vec<_> = file_as_string.lines().collect();
-            insta::assert_yaml_snapshot!(output);
+        for test_file in test_files {
+            if test_file.ends_with(".json") {
+                let value: Value = serde_json::from_reader(
+                    File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
+                )
+                .unwrap();
+                insta::assert_yaml_snapshot!(&value);
+            } else {
+                let file_as_string =
+                    read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
+
+                let output: Vec<_> = file_as_string.lines().collect();
+                insta::assert_yaml_snapshot!(output);
+            }
         }
+    }
+
+
+    #[test]
+    fn full_test() {
+        test_output("fixtures/basic.json", 
+                    vec!["csv/main.csv", "csv/platforms.csv"], 
+                    json!({}))
     }
 
     #[test]
     fn full_test_inline() {
-        let tmp_dir = TempDir::new().unwrap();
-        let output_dir = tmp_dir.path().join("output");
-        let output_path = output_dir.to_string_lossy().into_owned();
-        let mut flat_files = FlatFiles::new_with_defaults(output_path.clone()).unwrap();
-        flat_files.inline_one_to_one = true;
-        flatten(
-            BufReader::new(File::open("fixtures/basic.json").unwrap()),
-            flat_files,
-            vec![],
-        )
-        .unwrap();
-
-        for test_file in ["data_package.json"] {
-            let value: Value = serde_json::from_reader(
-                File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
-            )
-            .unwrap();
-            insta::assert_yaml_snapshot!(&value);
-        }
-
-        for test_file in ["fields.csv", "csv/main.csv", "csv/platforms.csv", "tables.csv"] {
-            let file_as_string =
-                read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
-
-            let output: Vec<_> = file_as_string.lines().collect();
-            insta::assert_yaml_snapshot!(output);
-        }
+        test_output("fixtures/basic.json", 
+                    vec!["csv/main.csv", "csv/platforms.csv"], 
+                    json!({"inline": true}));
     }
 
     #[test]
@@ -1692,38 +1687,9 @@ mod tests {
 
     #[test]
     fn test_tables_csv() {
-        let tmp_dir = TempDir::new().unwrap();
-        let output_dir = tmp_dir.path().join("output");
-        let output_path = output_dir.to_string_lossy().into_owned();
-        let mut flat_files = FlatFiles::new_with_defaults(
-            output_path.clone()
-        )
-        .unwrap();
-
-        flat_files.use_tables_csv("fixtures/reorder_remove_tables.csv".to_string(), true).unwrap();
-
-        flatten(
-            BufReader::new(File::open("fixtures/basic.json").unwrap()),
-            flat_files,
-            vec![],
-        )
-        .unwrap();
-
-        for test_file in ["data_package.json"] {
-            let value: Value = serde_json::from_reader(
-                File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
-            )
-            .unwrap();
-            insta::assert_yaml_snapshot!(&value);
-        }
-
-        for test_file in ["fields.csv", "csv/Devs.csv", "csv/Games.csv", "tables.csv"] {
-            let file_as_string =
-                read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
-
-            let output: Vec<_> = file_as_string.lines().collect();
-            insta::assert_yaml_snapshot!(output);
-        }
+        test_output("fixtures/basic.json", 
+                    vec!["csv/main.csv", "csv/platforms.csv"], 
+                    json!({"tables_csv": "fixtures/reorder_remove_tables.csv"}));
     }
 
     #[test]

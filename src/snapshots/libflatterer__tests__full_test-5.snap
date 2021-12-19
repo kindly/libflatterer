@@ -3,8 +3,8 @@ source: src/lib.rs
 expression: output
 
 ---
-- "table_name,table_title"
-- "main,main"
-- "developer,developer"
-- "platforms,platforms"
+- "_link,_link_main,name"
+- "1.platforms.0,1,PC"
+- "2.platforms.0,2,Xbox"
+- "2.platforms.1,2,Playstation"
 
