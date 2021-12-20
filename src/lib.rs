@@ -116,6 +116,8 @@ pub enum Error {
     },
     #[snafu(display("Invalid JSON due to the following error: {}", source))]
     SerdeReadError { source: serde_json::Error },
+    #[snafu(display("{}", message))]
+    FlattererProcessError { message: String },
     #[snafu(display("Error with writing XLSX file"))]
     FlattererXLSXError { source: xlsxwriter::XlsxError },
     #[snafu(display("Could not convert usize to int"))]
@@ -124,6 +126,8 @@ pub enum Error {
     YAJLishParseError { error: String },
     #[snafu(display(""))]
     ChannelSendError { source: SendError<Value> },
+    #[snafu(display(""))]
+    ChannelBufSendError { source: SendError<Vec<u8>> },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -1438,13 +1442,19 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<(
     });
 
     let stream = Deserializer::from_reader(input).into_iter::<Value>();
-    for value_result in stream {
+    for (num, value_result) in stream.enumerate() {
         if value_result.is_err() {
             remove_dir_all(&output_path).context(FlattererRemoveDir {
                 filename: output_path.to_string_lossy(),
             })?;
         }
         let value = value_result.context(SerdeReadError {})?;
+        if !value.is_object() {
+            remove_dir_all(&output_path).context(FlattererRemoveDir {
+                filename: output_path.to_string_lossy(),
+            })?;
+            return Err(Error::FlattererProcessError {message: format!("The JSON provided as input is not an array of objects: Value at array position {} is not an object: value is `{}`", num, value)});
+        };
         value_sender.send(value).context(ChannelSendError {})?;
     }
     drop(value_sender);
@@ -1473,11 +1483,34 @@ pub fn flatten<R: Read>(
 
     let output_path = flat_files.output_path.clone();
 
+    let mut first = true;
+
     let thread = thread::spawn(move || -> Result<()> {
-        for buf in buf_receiver.iter() {
+        for (num, buf) in buf_receiver.iter().enumerate() {
+            if buf.is_empty() {
+                return Err(Error::FlattererProcessError {
+                    message: "The JSON provided as input contains an empty array".to_string(),
+                });
+            }
             let value = serde_json::from_slice::<Value>(&buf).context(SerdeReadError {})?;
+            if !value.is_object() {
+                if first {
+                    return Err(Error::FlattererProcessError {
+                        message: "The JSON provided as input is not an array of objects"
+                            .to_string(),
+                    });
+                } else {
+                    return Err(Error::FlattererProcessError {
+                        message: format!(
+                            "Value at array position {} is not an object: value is `{}`",
+                            num, value
+                        ),
+                    });
+                }
+            };
             flat_files.process_value(value);
             flat_files.create_rows()?;
+            first = false;
         }
 
         flat_files.write_files()?;
@@ -1514,6 +1547,13 @@ pub fn flatten<R: Read>(
                 error: format!("Invalid JSON due to the following error: {}", error),
             });
         }
+    }
+
+    if !jl_writer.buf.is_empty() {
+        jl_writer
+            .buf_sender
+            .send(jl_writer.buf.clone())
+            .context(ChannelBufSendError {})?;
     }
 
     drop(jl_writer);
@@ -1568,7 +1608,6 @@ mod tests {
 
         if let Err(error) = result {
             if let Some(error_text) = options["error_text"].as_str() {
-                println!("{}", error.to_string());
                 assert!(error.to_string().contains(error_text))
             } else {
                 panic!(
@@ -1660,6 +1699,37 @@ mod tests {
             "fixtures/invalid_json_lines.jl",
             vec![],
             json!({"error_text": "Invalid JSON due to the following error:"}),
+        );
+    }
+
+    #[test]
+    fn test_bad_utf8() {
+        for extention in ["json", "jl"] {
+            test_output(
+                &format!("fixtures/bad_utf8.{}", extention),
+                vec![],
+                json!({"error_text": "Invalid JSON due to the following error:"}),
+            );
+        }
+    }
+
+    #[test]
+    fn main_array_literal() {
+        for extention in ["json", "jl"] {
+            test_output(
+                &format!("fixtures/main_array_literal.{}", extention),
+                vec![],
+                json!({"error_text": "The JSON provided as input is not an array of objects"}),
+            );
+        }
+    }
+
+    #[test]
+    fn main_array_empty() {
+        test_output(
+            "fixtures/array_empty.json",
+            vec![],
+            json!({"error_text": "The JSON provided as input contains an empty array"}),
         );
     }
 
