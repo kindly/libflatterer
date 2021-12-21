@@ -127,7 +127,7 @@ pub enum Error {
     #[snafu(display(""))]
     ChannelSendError { source: SendError<Value> },
     #[snafu(display(""))]
-    ChannelBufSendError { source: SendError<Vec<u8>> },
+    ChannelBufSendError { source: SendError<(Vec<u8>, bool)> },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -177,6 +177,7 @@ pub struct FlatFiles {
     pub preview: usize,
     only_tables: bool,
     table_order: HashMap<String, String>,
+    invalid_xlsx_char: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -242,13 +243,13 @@ struct TablesRecord {
 
 struct JLWriter {
     pub buf: Vec<u8>,
-    pub buf_sender: Sender<Vec<u8>>,
+    pub buf_sender: Sender<(Vec<u8>, bool)>,
 }
 
 impl Write for JLWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf == [b'\n'] {
-            if let Err(e) = self.buf_sender.send(self.buf.clone()) {
+            if let Err(e) = self.buf_sender.send((self.buf.clone(), false)) {
                 return Err(io::Error::new(io::ErrorKind::Interrupted, e));
             }
             self.buf.clear();
@@ -334,7 +335,8 @@ impl FlatFiles {
             field_titles_map: HashMap::new(),
             preview: 0,
             only_tables: false,
-            table_order: HashMap::new()
+            table_order: HashMap::new(),
+            invalid_xlsx_char: false
         };
 
         flat_files.set_csv(csv)?;
@@ -1113,6 +1115,12 @@ impl FlatFiles {
             }
         }
 
+        let invalid_regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
+            .octal(true)
+            .build()
+            .unwrap();
+        //let invalid_regex = regex::Regex::new(r"\u0000").unwrap();
+
         for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap(); //key known
             if metadata.rows == 0 || metadata.ignore {
@@ -1145,8 +1153,14 @@ impl FlatFiles {
 
             for order in table_order {
                 if !metadata.ignore_fields[order] {
+                    let mut title = metadata.field_titles[order].clone();
+                    if invalid_regex.is_match(&title) {
+                        self.invalid_xlsx_char = true;
+                        title = invalid_regex.replace_all(&title, "").to_string();
+                    }
+
                     worksheet
-                        .write_string(0, col_index, &metadata.field_titles[order].clone(), None)
+                        .write_string(0, col_index, &title, None)
                         .context(FlattererXLSXError {})?;
                     col_index += 1;
                 }
@@ -1168,7 +1182,12 @@ impl FlatFiles {
                         continue;
                     }
 
-                    let cell = &this_row[order];
+                    let mut cell = this_row[order].to_string();
+
+                    if invalid_regex.is_match(&cell) {
+                        self.invalid_xlsx_char = true;
+                        cell = invalid_regex.replace_all(&cell, "").to_string();
+                    }
 
                     if metadata.field_type[order] == "number" {
                         if let Ok(number) = cell.parse::<f64>() {
@@ -1185,7 +1204,7 @@ impl FlatFiles {
                                 .write_string(
                                     (row_num + 1).try_into().context(FlattererIntError {})?,
                                     col_index,
-                                    cell,
+                                    &cell,
                                     None,
                                 )
                                 .context(FlattererXLSXError {})?;
@@ -1195,7 +1214,7 @@ impl FlatFiles {
                             .write_string(
                                 (row_num + 1).try_into().context(FlattererIntError {})?,
                                 col_index,
-                                cell,
+                                &cell,
                                 None,
                             )
                             .context(FlattererXLSXError {})?;
@@ -1427,18 +1446,18 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     new_parts.join(seperator)
 }
 
-pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<()> {
+pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<FlatFiles> {
     let (value_sender, value_receiver) = bounded(1000);
     let output_path = flat_files.output_path.clone();
 
-    let thread = thread::spawn(move || -> Result<()> {
+    let thread = thread::spawn(move || -> Result<FlatFiles> {
         for value in value_receiver {
             flat_files.process_value(value);
             flat_files.create_rows()?
         }
 
         flat_files.write_files()?;
-        Ok(())
+        Ok(flat_files)
     });
 
     let stream = Deserializer::from_reader(input).into_iter::<Value>();
@@ -1465,56 +1484,62 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<(
                 remove_dir_all(&output_path).context(FlattererRemoveDir {
                     filename: output_path.to_string_lossy(),
                 })?;
-                return Err(err);
+                Err(err)
+            } else {
+                Ok(result.unwrap())
             }
         }
         Err(err) => panic::resume_unwind(err),
     }
-
-    Ok(())
 }
+
+type VecBool = (Vec<u8>, bool);
 
 pub fn flatten<R: Read>(
     mut input: BufReader<R>,
     mut flat_files: FlatFiles,
     selectors: Vec<Selector>,
-) -> Result<()> {
-    let (buf_sender, buf_receiver): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = bounded(1000);
+) -> Result<FlatFiles> {
+    let (buf_sender, buf_receiver): (Sender<VecBool>, Receiver<VecBool>) =
+        bounded(1000);
 
     let output_path = flat_files.output_path.clone();
 
-    let mut first = true;
-
-    let thread = thread::spawn(move || -> Result<()> {
-        for (num, buf) in buf_receiver.iter().enumerate() {
+    let thread = thread::spawn(move || -> Result<FlatFiles> {
+        for (num, (buf, extra)) in buf_receiver.iter().enumerate() {
             if buf.is_empty() {
                 return Err(Error::FlattererProcessError {
                     message: "The JSON provided as input contains an empty array".to_string(),
                 });
             }
             let value = serde_json::from_slice::<Value>(&buf).context(SerdeReadError {})?;
-            if !value.is_object() {
-                if first {
-                    return Err(Error::FlattererProcessError {
-                        message: "The JSON provided as input is not an array of objects"
-                            .to_string(),
-                    });
-                } else {
-                    return Err(Error::FlattererProcessError {
-                        message: format!(
-                            "Value at array position {} is not an object: value is `{}`",
-                            num, value
-                        ),
-                    });
+            if extra {
+                let mut extra_detail = "";
+                if value.is_object() {
+                    extra_detail = ": It looks like you have supplied an object, try the `--json-lines` option."
                 }
-            };
+
+                return Err(Error::FlattererProcessError {
+                    message: format!(
+                        "{}{}",
+                        "The JSON provided as input is not an array of objects", extra_detail
+                    ),
+                });
+            }
+            if !value.is_object() {
+                return Err(Error::FlattererProcessError {
+                    message: format!(
+                        "Value at array position {} is not an object: value is `{}`",
+                        num, value
+                    ),
+                });
+            }
             flat_files.process_value(value);
             flat_files.create_rows()?;
-            first = false;
         }
 
         flat_files.write_files()?;
-        Ok(())
+        Ok(flat_files)
     });
 
     let mut jl_writer = JLWriter {
@@ -1552,7 +1577,7 @@ pub fn flatten<R: Read>(
     if !jl_writer.buf.is_empty() {
         jl_writer
             .buf_sender
-            .send(jl_writer.buf.clone())
+            .send((jl_writer.buf.clone(), true))
             .context(ChannelBufSendError {})?;
     }
 
@@ -1566,11 +1591,10 @@ pub fn flatten<R: Read>(
                 })?;
                 return Err(err);
             }
+            Ok(result.unwrap())
         }
         Err(err) => panic::resume_unwind(err),
     }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -1587,6 +1611,9 @@ mod tests {
 
         if let Some(inline) = options["inline"].as_bool() {
             flat_files.inline_one_to_one = inline
+        }
+        if let Some(xlsx) = options["xlsx"].as_bool() {
+            flat_files.xlsx = xlsx
         }
         if let Some(tables_csv) = options["tables_csv"].as_str() {
             flat_files
@@ -1617,6 +1644,13 @@ mod tests {
             }
             assert!(!output_dir.exists());
             return;
+        }
+
+        if let Some(invalid) = options["invalid_xlsx_char"].as_bool() {
+            if invalid {
+                let flat_files = result.unwrap();
+                assert!(flat_files.invalid_xlsx_char)
+            }
         }
 
         let mut test_files = vec!["data_package.json", "fields.csv", "tables.csv"];
@@ -1730,6 +1764,42 @@ mod tests {
             "fixtures/array_empty.json",
             vec![],
             json!({"error_text": "The JSON provided as input contains an empty array"}),
+        );
+    }
+
+    #[test]
+    fn array_literal() {
+        test_output(
+            "fixtures/array_literal.json",
+            vec![],
+            json!({"error_text": "Value at array position 0 is not an object: value is `1`"}),
+        );
+    }
+
+    #[test]
+    fn array_mixed() {
+        test_output(
+            "fixtures/array_mixed.json",
+            vec![],
+            json!({"error_text": "Value at array position 1 is not an object: value is `1`"}),
+        );
+    }
+
+    #[test]
+    fn array_object() {
+        test_output(
+            "fixtures/array_object.json",
+            vec![],
+            json!({"error_text": "The JSON provided as input is not an array of objects: It looks like you have supplied an object, try the `--json-lines` option."}),
+        );
+    }
+
+    #[test]
+    fn invalid_xlsx_char() {
+        test_output(
+            "fixtures/illegal.json",
+            vec![],
+            json!({"invalid_xlsx_char": true, "xlsx": true}),
         );
     }
 

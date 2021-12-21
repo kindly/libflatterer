@@ -1,0 +1,23 @@
+---
+source: src/lib.rs
+expression: "&value"
+
+---
+profile: tabular-data-package
+resources:
+  - profile: tabular-data-resource
+    name: main
+    schema:
+      fields:
+        - name: _link
+          type: text
+          count: 1
+        - name: _link_main
+          type: text
+          count: 1
+        - name: "\u0000"
+          type: text
+          count: 1
+      primaryKey: _link
+    path: csv/main.csv
+
