@@ -655,7 +655,7 @@ impl FlatFiles {
                         output_path,
                     ),
                 );
-                if !self.only_tables {
+                if !self.only_tables && !self.table_order.contains_key(table) {
                     self.table_order.insert(table.clone(), table.clone());
                 }
             }
@@ -934,7 +934,7 @@ impl FlatFiles {
             if self.csv {
                 resource.as_object_mut().unwrap().insert(
                     "path".to_string(),
-                    Value::String(format!("csv/{}.csv", table_name)),
+                    Value::String(format!("csv/{}.csv", table_title)),
                 );
             }
 
@@ -1247,7 +1247,7 @@ impl FlatFiles {
                 filename: "postgresql_load.sql",
             })?;
 
-        for table_name in self.table_metadata.keys() {
+        for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1256,7 +1256,7 @@ impl FlatFiles {
             writeln!(
                 postgresql_schema,
                 "CREATE TABLE \"{ }\"(",
-                table_name.to_lowercase()
+                table_title.to_lowercase()
             )
             .context(FlattererFileWriteError {
                 filename: "postgresql_schema.sql",
@@ -1285,8 +1285,8 @@ impl FlatFiles {
             writeln!(
                 postgresql_load,
                 "\\copy \"{}\" from '{}' with CSV HEADER",
-                table_name.to_lowercase(),
-                format!("csv/{}.csv", table_name),
+                table_title.to_lowercase(),
+                format!("csv/{}.csv", table_title),
             )
             .context(FlattererFileWriteError {
                 filename: "postgresql_load.sql",
@@ -1317,7 +1317,7 @@ impl FlatFiles {
             filename: "sqlite_schema.sql",
         })?;
 
-        for table_name in self.table_metadata.keys() {
+        for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1326,7 +1326,7 @@ impl FlatFiles {
             writeln!(
                 sqlite_schema,
                 "CREATE TABLE \"{ }\"(",
-                table_name.to_lowercase()
+                table_title.to_lowercase()
             )
             .context(FlattererFileWriteError {
                 filename: "sqlite_schema.sql",
@@ -1353,8 +1353,8 @@ impl FlatFiles {
             writeln!(
                 sqlite_load,
                 ".import '{}' {} --skip 1 ",
-                format!("csv/{}.csv", table_name),
-                table_name.to_lowercase()
+                format!("csv/{}.csv", table_title),
+                table_title.to_lowercase()
             )
             .context(FlattererFileWriteError {
                 filename: "sqlite_load.sql",
@@ -1619,10 +1619,13 @@ mod tests {
             flat_files.xlsx = xlsx
         }
         if let Some(tables_csv) = options["tables_csv"].as_str() {
+            let tables_only = options["tables_only"].as_bool().unwrap();
+
             flat_files
-                .use_tables_csv(tables_csv.to_string(), true)
+                .use_tables_csv(tables_csv.to_string(), tables_only)
                 .unwrap();
         }
+
 
         let result;
 
@@ -1701,11 +1704,13 @@ mod tests {
 
     #[test]
     fn test_tables_csv() {
-        test_output(
-            "fixtures/basic.json",
-            vec!["csv/Devs.csv", "csv/Games.csv"],
-            json!({"tables_csv": "fixtures/reorder_remove_tables.csv"}),
-        );
+        for tables_only in [true, false] {
+            test_output(
+                "fixtures/basic.json",
+                vec!["csv/Devs.csv", "csv/Games.csv"],
+                json!({"tables_csv": "fixtures/reorder_remove_tables.csv", "tables_only": tables_only}),
+            );
+        }
     }
 
     #[test]

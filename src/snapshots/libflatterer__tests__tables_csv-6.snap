@@ -44,4 +44,19 @@ resources:
           count: 2
       primaryKey: _link
     path: csv/Games.csv
+  - profile: tabular-data-resource
+    name: platforms
+    schema:
+      fields:
+        - name: _link
+          type: text
+          count: 3
+        - name: _link_main
+          type: text
+          count: 3
+        - name: name
+          type: text
+          count: 3
+      primaryKey: _link
+    path: csv/platforms.csv
 
