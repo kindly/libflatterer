@@ -12,9 +12,6 @@ resources:
         - name: _link
           type: text
           count: 1
-        - name: _link_main
-          type: text
-          count: 1
         - name: "\u0000"
           type: text
           count: 1

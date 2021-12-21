@@ -27,9 +27,6 @@ resources:
         - name: _link
           type: text
           count: 2
-        - name: _link_main
-          type: text
-          count: 2
         - name: id
           type: number
           count: 2

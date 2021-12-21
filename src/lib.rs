@@ -320,7 +320,7 @@ impl FlatFiles {
             xlsx,
             main_table_name: [table_prefix.clone(), main_table_name].concat(),
             emit_obj: smallvec_emit_obj,
-            row_number: 1,
+            row_number: 0,
             date_regexp: Regex::new(r"^([1-3]\d{3})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)((-(\d{2}):(\d{2})|Z)?))?$").unwrap(),
             table_rows: HashMap::new(),
             tmp_csvs: HashMap::new(),
@@ -611,10 +611,12 @@ impl FlatFiles {
             }
         }
 
-        obj.insert(
-            ["_link_", &self.main_table_name].concat(),
-            Value::String(self.row_number.to_string()),
-        );
+        if table_name != self.main_table_name {
+            obj.insert(
+                ["_link_", &self.main_table_name].concat(),
+                Value::String(self.row_number.to_string()),
+            );
+        };
 
         let current_list = self.table_rows.get_mut(&table_name).unwrap(); //we added table_row already
         current_list.push(obj);
@@ -780,7 +782,9 @@ impl FlatFiles {
             let table_metadata = self.table_metadata.get_mut(&row.table_name).unwrap(); //key known
             table_metadata.fields.push(row.field_name.clone());
             table_metadata.field_counts.push(0);
-            table_metadata.field_type.push(row.field_type.unwrap_or_else(|| "".to_string()));
+            table_metadata
+                .field_type
+                .push(row.field_type.unwrap_or_else(|| "".to_string()));
             table_metadata.ignore_fields.push(false);
             match row.field_title {
                 Some(field_title) => table_metadata.field_titles.push(field_title),
@@ -1500,8 +1504,7 @@ pub fn flatten<R: Read>(
     mut flat_files: FlatFiles,
     selectors: Vec<Selector>,
 ) -> Result<FlatFiles> {
-    let (buf_sender, buf_receiver): (Sender<VecBool>, Receiver<VecBool>) =
-        bounded(1000);
+    let (buf_sender, buf_receiver): (Sender<VecBool>, Receiver<VecBool>) = bounded(1000);
 
     let output_path = flat_files.output_path.clone();
 

@@ -8,7 +8,6 @@ expression: output
 - "developer,_link_main,text,_link_main,2"
 - "developer,name,text,name,2"
 - "main,_link,text,_link,2"
-- "main,_link_main,text,_link_main,2"
 - "main,id,number,id,2"
 - "main,title,text,title,2"
 - "main,releaseDate,date,releaseDate,2"

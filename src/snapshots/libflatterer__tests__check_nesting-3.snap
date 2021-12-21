@@ -10,16 +10,13 @@ main:
     - text
     - date
     - text
-    - text
   fields:
     - a
     - c
     - d_da
     - d_db
     - _link
-    - _link_main
   field_counts:
-    - 2
     - 2
     - 2
     - 2
@@ -33,7 +30,6 @@ main:
     - false
     - false
     - false
-    - false
   order: []
   field_titles:
     - a
@@ -41,7 +37,6 @@ main:
     - d_da
     - d_db
     - _link
-    - _link_main
   table_name_with_separator: ""
   output_path: "[path]"
 e:

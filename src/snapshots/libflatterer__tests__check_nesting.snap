@@ -8,15 +8,14 @@ main:
     c: "a,b,c"
     d_da: da
     d_db: 2005-01-01
-    _link: "1"
-    _link_main: "1"
+    _link: "0"
 e:
   - ea: 1
     eb: eb2
-    _link: 1.e.0
-    _link_main: "1"
+    _link: 0.e.0
+    _link_main: "0"
   - ea: 2
     eb: eb2
-    _link: 1.e.1
-    _link_main: "1"
+    _link: 0.e.1
+    _link_main: "0"
 

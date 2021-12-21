@@ -9,15 +9,12 @@ main:
     - number
     - text
     - text
-    - text
   fields:
     - id
     - e_ea
     - e_eb
     - _link
-    - _link_main
   field_counts:
-    - 2
     - 2
     - 2
     - 2
@@ -29,14 +26,12 @@ main:
     - false
     - false
     - false
-    - false
   order: []
   field_titles:
     - id
     - e_ea
     - e_eb
     - _link
-    - _link_main
   table_name_with_separator: ""
   output_path: "[path]"
 e:
