@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.10.1"
+version = "0.10.2"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -26,6 +26,7 @@ slug="0.1"
 smartstring={version = "0.2", features = ["serde"] }
 snafu = {version = "0.6"}
 indexmap = {version = "1", features = ["serde"] }
+log = "0.4"
 
 [dev-dependencies]
 insta = {version = "1.8.0", features = ["redactions"]}

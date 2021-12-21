@@ -48,6 +48,7 @@ use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 use itertools::Itertools;
 use regex::Regex;
+use log::warn;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Deserializer, Map, Value};
 use smallvec::{smallvec, SmallVec};
@@ -177,7 +178,6 @@ pub struct FlatFiles {
     pub preview: usize,
     only_tables: bool,
     table_order: HashMap<String, String>,
-    invalid_xlsx_char: bool,
 }
 
 #[derive(Serialize, Debug)]
@@ -336,7 +336,6 @@ impl FlatFiles {
             preview: 0,
             only_tables: false,
             table_order: HashMap::new(),
-            invalid_xlsx_char: false
         };
 
         flat_files.set_csv(csv)?;
@@ -1159,7 +1158,7 @@ impl FlatFiles {
                 if !metadata.ignore_fields[order] {
                     let mut title = metadata.field_titles[order].clone();
                     if invalid_regex.is_match(&title) {
-                        self.invalid_xlsx_char = true;
+                        warn!("Characters found in input JSON that are not allowed in XLSX file or could cause issues. Striping these, so output is possible.");
                         title = invalid_regex.replace_all(&title, "").to_string();
                     }
 
@@ -1189,7 +1188,7 @@ impl FlatFiles {
                     let mut cell = this_row[order].to_string();
 
                     if invalid_regex.is_match(&cell) {
-                        self.invalid_xlsx_char = true;
+                        warn!("Character found in JSON that is not allowed in XLSX file. Removing these so output is possible");
                         cell = invalid_regex.replace_all(&cell, "").to_string();
                     }
 
@@ -1650,13 +1649,6 @@ mod tests {
             }
             assert!(!output_dir.exists());
             return;
-        }
-
-        if let Some(invalid) = options["invalid_xlsx_char"].as_bool() {
-            if invalid {
-                let flat_files = result.unwrap();
-                assert!(flat_files.invalid_xlsx_char)
-            }
         }
 
         let mut test_files = vec!["data_package.json", "fields.csv", "tables.csv"];
