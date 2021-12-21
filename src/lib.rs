@@ -231,7 +231,7 @@ impl TableMetadata {
 struct FieldsRecord {
     table_name: String,
     field_name: String,
-    field_type: String,
+    field_type: Option<String>,
     field_title: Option<String>,
 }
 
@@ -780,7 +780,7 @@ impl FlatFiles {
             let table_metadata = self.table_metadata.get_mut(&row.table_name).unwrap(); //key known
             table_metadata.fields.push(row.field_name.clone());
             table_metadata.field_counts.push(0);
-            table_metadata.field_type.push(row.field_type);
+            table_metadata.field_type.push(row.field_type.unwrap_or_else(|| "".to_string()));
             table_metadata.ignore_fields.push(false);
             match row.field_title {
                 Some(field_title) => table_metadata.field_titles.push(field_title),
@@ -1114,7 +1114,7 @@ impl FlatFiles {
                 });
             }
         }
-
+        #[allow(clippy::invalid_regex)]
         let invalid_regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
             .octal(true)
             .build()
