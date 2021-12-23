@@ -856,6 +856,10 @@ impl FlatFiles {
     }
 
     pub fn write_files(&mut self) -> Result<()> {
+        if !self.output_path.exists() {
+            return Ok(()) // This is really an error but it should be handled by main thread.
+        }
+
         info!("Analyzing input data");
         self.mark_ignore();
         self.determine_order();
