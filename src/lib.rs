@@ -48,7 +48,7 @@ use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 use itertools::Itertools;
 use regex::Regex;
-use log::warn;
+use log::{warn, info};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Deserializer, Map, Value};
 use smallvec::{smallvec, SmallVec};
@@ -856,6 +856,7 @@ impl FlatFiles {
     }
 
     pub fn write_files(&mut self) -> Result<()> {
+        info!("Analyzing input data");
         self.mark_ignore();
         self.determine_order();
 
@@ -885,6 +886,7 @@ impl FlatFiles {
         remove_dir_all(&tmp_path).context(FlattererRemoveDir {
             filename: tmp_path.to_string_lossy(),
         })?;
+        info!("Writing metadata files");
 
         self.write_data_package()?;
         self.write_fields_csv()?;
@@ -1018,6 +1020,7 @@ impl FlatFiles {
     }
 
     pub fn write_csvs(&mut self) -> Result<()> {
+        info!("Writing final CSV files");
         let tmp_path = self.output_path.join("tmp");
         let csv_path = self.output_path.join("csv");
 
@@ -1037,6 +1040,7 @@ impl FlatFiles {
                 })?;
 
             let filepath = csv_path.join(format!("{}.csv", table_title));
+            info!("    Writing {} row(s) to {}.csv", metadata.rows, table_title);
             let mut csv_writer = WriterBuilder::new().from_path(filepath.clone()).context(
                 FlattererCSVWriteError {
                     filepath: filepath.clone(),
@@ -1094,6 +1098,7 @@ impl FlatFiles {
     }
 
     pub fn write_xlsx(&mut self) -> Result<()> {
+        info!("Writing final XLSX file");
         let tmp_path = self.output_path.join("tmp");
 
         let workbook = Workbook::new_with_options(
@@ -1136,6 +1141,7 @@ impl FlatFiles {
             } else {
                 new_table_title = truncate_xlsx_title(new_table_title, &self.path_separator);
             }
+            info!("    Writing {} row(s) to sheet `{}`", metadata.rows, new_table_title);
 
             let mut worksheet = workbook
                 .add_worksheet(Some(&new_table_title))
@@ -1452,12 +1458,19 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
 pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<FlatFiles> {
     let (value_sender, value_receiver) = bounded(1000);
     let output_path = flat_files.output_path.clone();
+    info!("Reading JSON input stream and saving output into temporary CSV files");
 
     let thread = thread::spawn(move || -> Result<FlatFiles> {
+        let mut count = 0;
         for value in value_receiver {
             flat_files.process_value(value);
-            flat_files.create_rows()?
+            flat_files.create_rows()?;
+            count += 1;
+            if count % 500000 == 0 {
+                info!("Processed {} values so far.", count);
+            }
         }
+        info!("Finished processing {} value(s)", count);
 
         flat_files.write_files()?;
         Ok(flat_files)
@@ -1504,21 +1517,24 @@ pub fn flatten<R: Read>(
     selectors: Vec<Selector>,
 ) -> Result<FlatFiles> {
     let (buf_sender, buf_receiver): (Sender<VecBool>, Receiver<VecBool>) = bounded(1000);
+    info!("Reading JSON input file and saving output into temporary CSV files");
 
     let output_path = flat_files.output_path.clone();
 
     let thread = thread::spawn(move || -> Result<FlatFiles> {
-        for (num, (buf, extra)) in buf_receiver.iter().enumerate() {
+        let mut count = 0;
+        for (buf, extra) in buf_receiver.iter() {
             if buf.is_empty() {
                 return Err(Error::FlattererProcessError {
                     message: "The JSON provided as input contains an empty array".to_string(),
                 });
             }
-            let value = serde_json::from_slice::<Value>(&buf).context(SerdeReadError {})?;
             if extra {
+                log::debug!("Extra data found in input, unspecified behaviour in yajlish");
                 let mut extra_detail = "";
-                if value.is_object() {
-                    extra_detail = ": It looks like you have supplied an object, try the `--json-lines` option."
+
+                if buf[0] == 123 { // 123 is a `{`
+                    extra_detail = ": It looks like you have supplied an object, either supply a correct `--path` or try the `--json-lines` option."
                 }
 
                 return Err(Error::FlattererProcessError {
@@ -1528,17 +1544,24 @@ pub fn flatten<R: Read>(
                     ),
                 });
             }
+            let value = serde_json::from_slice::<Value>(&buf).context(SerdeReadError {})?;
+
             if !value.is_object() {
                 return Err(Error::FlattererProcessError {
                     message: format!(
                         "Value at array position {} is not an object: value is `{}`",
-                        num, value
+                        count, value
                     ),
                 });
             }
             flat_files.process_value(value);
             flat_files.create_rows()?;
+            count += 1;
+            if count % 500000 == 0 {
+                info!("Processed {} values so far.", count);
+            }
         }
+        info!("Finished processing {} value(s)", count);
 
         flat_files.write_files()?;
         Ok(flat_files)
@@ -1556,6 +1579,7 @@ pub fn flatten<R: Read>(
         remove_dir_all(&output_path).context(FlattererRemoveDir {
             filename: output_path.to_string_lossy(),
         })?;
+        log::debug!("Parse error, whilst in main parsing");
         return Err(Error::YAJLishParseError {
             error: format!("Invalid JSON due to the following error: {}", error),
         });
@@ -1570,6 +1594,7 @@ pub fn flatten<R: Read>(
             remove_dir_all(&output_path).context(FlattererRemoveDir {
                 filename: output_path.to_string_lossy(),
             })?;
+            log::debug!("Parse error, whilst in cleaning up parsing");
             return Err(Error::YAJLishParseError {
                 error: format!("Invalid JSON due to the following error: {}", error),
             });
@@ -1790,7 +1815,7 @@ mod tests {
         test_output(
             "fixtures/array_object.json",
             vec![],
-            json!({"error_text": "The JSON provided as input is not an array of objects: It looks like you have supplied an object, try the `--json-lines` option."}),
+            json!({"error_text": "The JSON provided as input is not an array of objects: It looks like you have supplied an object, either supply a correct `--path` or try the `--json-lines` option."}),
         );
     }
 
