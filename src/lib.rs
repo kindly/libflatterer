@@ -43,6 +43,7 @@ use std::fs::{create_dir_all, remove_dir_all, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
 use std::{panic, thread};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
@@ -59,6 +60,10 @@ use yajlish::ndjson_handler::NdJsonHandler;
 use yajlish::Parser;
 
 pub use yajlish::ndjson_handler::Selector;
+
+lazy_static::lazy_static! {
+    pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
+}
 
 #[non_exhaustive]
 #[derive(Debug, Snafu)]
@@ -89,6 +94,8 @@ pub enum Error {
         sheet
     ))]
     XLSXTooManyColumns { columns: usize, sheet: String },
+    #[snafu(display("Terminated"))]
+    Terminated {},
     #[snafu(display("Json Dereferencing Failed"))]
     JSONRefError { source: schema_analysis::Error },
     #[snafu(display("Error writing to CSV file {}", filepath.to_string_lossy()))]
@@ -129,6 +136,8 @@ pub enum Error {
     ChannelSendError { source: SendError<Value> },
     #[snafu(display(""))]
     ChannelBufSendError { source: SendError<(Vec<u8>, bool)> },
+    #[snafu(display(""))]
+    ChannelStopSendError { source: SendError<()> },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -249,8 +258,9 @@ struct JLWriter {
 impl Write for JLWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf == [b'\n'] {
-            if let Err(e) = self.buf_sender.send((self.buf.clone(), false)) {
-                return Err(io::Error::new(io::ErrorKind::Interrupted, e));
+            if let Err(_) = self.buf_sender.send((self.buf.clone(), false)) {
+                log::error!("Unable to process any data, most likely caused by termination of worker");
+                return Err(io::Error::new(io::ErrorKind::Other, "Unable to process any data, most likely caused by termination of worker"));
             }
             self.buf.clear();
             Ok(buf.len())
@@ -856,10 +866,6 @@ impl FlatFiles {
     }
 
     pub fn write_files(&mut self) -> Result<()> {
-        if !self.output_path.exists() {
-            return Ok(()) // This is really an error but it should be handled by main thread.
-        }
-
         info!("Analyzing input data");
         self.mark_ignore();
         self.determine_order();
@@ -1045,6 +1051,9 @@ impl FlatFiles {
 
             let filepath = csv_path.join(format!("{}.csv", table_title));
             info!("    Writing {} row(s) to {}.csv", metadata.rows, table_title);
+            if TERMINATE.load(Ordering::SeqCst) {
+                return Err(Error::Terminated {})
+            };
             let mut csv_writer = WriterBuilder::new().from_path(filepath.clone()).context(
                 FlattererCSVWriteError {
                     filepath: filepath.clone(),
@@ -1145,6 +1154,9 @@ impl FlatFiles {
             } else {
                 new_table_title = truncate_xlsx_title(new_table_title, &self.path_separator);
             }
+            if TERMINATE.load(Ordering::SeqCst) {
+                return Err(Error::Terminated {})
+            };
             info!("    Writing {} row(s) to sheet `{}`", metadata.rows, new_table_title);
 
             let mut worksheet = workbook
@@ -1461,6 +1473,7 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
 
 pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<FlatFiles> {
     let (value_sender, value_receiver) = bounded(1000);
+    let (stop_sender, stop_receiver) = bounded(1);
     let output_path = flat_files.output_path.clone();
     info!("Reading JSON input stream and saving output into temporary CSV files");
 
@@ -1471,9 +1484,20 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<F
             flat_files.create_rows()?;
             count += 1;
             if count % 500000 == 0 {
+                if TERMINATE.load(Ordering::SeqCst) {
+                    log::debug!("Terminating..");
+                    return Err(Error::Terminated {})
+                };
+                if stop_receiver.try_recv().is_ok() {
+                    return Ok(flat_files) // This is really an error but it should be handled by main thread.
+                }
                 info!("Processed {} values so far.", count);
             }
         }
+        if stop_receiver.try_recv().is_ok() {
+            return Ok(flat_files) // This is really an error but it should be handled by main thread.
+        }
+
         info!("Finished processing {} value(s)", count);
 
         flat_files.write_files()?;
@@ -1483,18 +1507,22 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<F
     let stream = Deserializer::from_reader(input).into_iter::<Value>();
     for (num, value_result) in stream.enumerate() {
         if value_result.is_err() {
+            stop_sender.send(()).context(ChannelStopSendError {})?;
             remove_dir_all(&output_path).context(FlattererRemoveDir {
                 filename: output_path.to_string_lossy(),
             })?;
         }
         let value = value_result.context(SerdeReadError {})?;
         if !value.is_object() {
+            stop_sender.send(()).context(ChannelStopSendError {})?;
             remove_dir_all(&output_path).context(FlattererRemoveDir {
                 filename: output_path.to_string_lossy(),
             })?;
             return Err(Error::FlattererProcessError {message: format!("The JSON provided as input is not an array of objects: Value at array position {} is not an object: value is `{}`", num, value)});
         };
-        value_sender.send(value).context(ChannelSendError {})?;
+        if value_sender.send(value).is_err() {
+            break
+        };
     }
     drop(value_sender);
 
@@ -1521,6 +1549,7 @@ pub fn flatten<R: Read>(
     selectors: Vec<Selector>,
 ) -> Result<FlatFiles> {
     let (buf_sender, buf_receiver): (Sender<VecBool>, Receiver<VecBool>) = bounded(1000);
+    let (stop_sender, stop_receiver) = bounded(1);
     info!("Reading JSON input file and saving output into temporary CSV files");
 
     let output_path = flat_files.output_path.clone();
@@ -1563,8 +1592,21 @@ pub fn flatten<R: Read>(
             count += 1;
             if count % 500000 == 0 {
                 info!("Processed {} values so far.", count);
+                if TERMINATE.load(Ordering::SeqCst) {
+                    log::debug!("Terminating..");
+                    return Err(Error::Terminated {})
+                };
+                if stop_receiver.try_recv().is_ok() {
+                    return Ok(flat_files) // This is really an error but it should be handled by main thread.
+                }
             }
         }
+        if stop_receiver.try_recv().is_ok() {
+            return Ok(flat_files) // This is really an error but it should be handled by main thread.
+        }
+        if TERMINATE.load(Ordering::SeqCst) {
+            return Err(Error::Terminated {})
+        };
         info!("Finished processing {} value(s)", count);
 
         flat_files.write_files()?;
@@ -1575,15 +1617,15 @@ pub fn flatten<R: Read>(
         buf: vec![],
         buf_sender,
     };
-
     let mut handler = NdJsonHandler::new(&mut jl_writer, selectors);
     let mut parser = Parser::new(&mut handler);
 
     if let Err(error) = parser.parse(&mut input) {
+        log::debug!("Parse error, whilst in main parsing");
+        stop_sender.send(()).context(ChannelStopSendError {})?;
         remove_dir_all(&output_path).context(FlattererRemoveDir {
             filename: output_path.to_string_lossy(),
         })?;
-        log::debug!("Parse error, whilst in main parsing");
         return Err(Error::YAJLishParseError {
             error: format!("Invalid JSON due to the following error: {}", error),
         });
@@ -1595,10 +1637,11 @@ pub fn flatten<R: Read>(
             .to_string()
             .contains("Did not reach a ParseComplete status")
         {
+            log::debug!("Parse error, whilst in cleaning up parsing");
+            stop_sender.send(()).context(ChannelStopSendError {})?;
             remove_dir_all(&output_path).context(FlattererRemoveDir {
                 filename: output_path.to_string_lossy(),
             })?;
-            log::debug!("Parse error, whilst in cleaning up parsing");
             return Err(Error::YAJLishParseError {
                 error: format!("Invalid JSON due to the following error: {}", error),
             });
@@ -1617,6 +1660,7 @@ pub fn flatten<R: Read>(
     match thread.join() {
         Ok(result) => {
             if let Err(err) = result {
+                log::debug!("Error on thread join {}", err);
                 remove_dir_all(&output_path).context(FlattererRemoveDir {
                     filename: output_path.to_string_lossy(),
                 })?;
