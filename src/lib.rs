@@ -975,6 +975,10 @@ impl FlatFiles {
                 filepath: filepath.clone(),
             })?;
         for (table_name, table_title) in self.table_order.iter() {
+            let metadata = self.table_metadata.get(table_name).unwrap();
+            if metadata.rows == 0 || metadata.ignore {
+                continue;
+            }
             table_writer
                 .write_record([table_name, table_title])
                 .context(FlattererCSVWriteError {
