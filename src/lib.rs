@@ -3,7 +3,7 @@
 //! Currently for use only for [flatterer](https://flatterer.opendata.coop/).
 //!
 //! This is all an internal API exposed to the above tool, so fairly unstable for the time being
-//! and extra argument could be added with minor version bump.
+//! as extra arguments could be added with minor version bump.
 //!
 //! ```
 //! use tempfile::TempDir;
@@ -35,6 +35,7 @@
 //!```
 mod postgresql;
 mod schema_analysis;
+mod guess_array;
 
 use indexmap::IndexMap as HashMap;
 use std::convert::TryInto;
@@ -60,6 +61,7 @@ use yajlish::ndjson_handler::NdJsonHandler;
 use yajlish::Parser;
 
 pub use yajlish::ndjson_handler::Selector;
+pub use guess_array::parse;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
