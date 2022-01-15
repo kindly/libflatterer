@@ -402,7 +402,7 @@ impl FlatFiles {
         no_index_path: SmallVec<[SmartString; 5]>,
         one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
-        one_to_one_key: bool,
+        parent_one_to_one_key: bool,
     ) -> Option<Map<String, Value>> {
         let mut table_name = String::new();
         if emit {
@@ -454,7 +454,6 @@ impl FlatFiles {
                     let my_array = removed_array.as_array_mut().unwrap(); //key known as array
                     for (i, array_value) in my_array.iter_mut().enumerate() {
                         let my_value = array_value.take();
-
                         let mut new_full_path = full_path.clone();
                         new_full_path.push(PathItem::Key(SmartString::from(key)));
                         new_full_path.push(PathItem::Index(i));
@@ -482,8 +481,8 @@ impl FlatFiles {
                             }
                         }
 
-                        if let Value::Object(my_obj) = my_value {
-                            if !one_to_one_key {
+                        if let Value::Object(my_obj) = my_value { 
+                            if !parent_one_to_one_key && !my_obj.is_empty() {
                                 self.handle_obj(
                                     my_obj,
                                     true,
@@ -1879,6 +1878,15 @@ mod tests {
             "fixtures/illegal.json",
             vec![],
             json!({"invalid_xlsx_char": true, "xlsx": true}),
+        );
+    }
+
+    #[test]
+    fn test_empty_array() {
+        test_output(
+            "fixtures/testempty.json",
+            vec![],
+            json!({}),
         );
     }
 

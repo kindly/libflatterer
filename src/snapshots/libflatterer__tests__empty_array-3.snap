@@ -1,0 +1,8 @@
+---
+source: src/lib.rs
+expression: output
+
+---
+- "table_name,table_title"
+- "main,main"
+
