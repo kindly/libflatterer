@@ -322,7 +322,7 @@ impl FlatFiles {
         let output_path = PathBuf::from(output_dir);
         if output_path.is_dir() {
             if force {
-                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                     filename: output_path.to_string_lossy(),
                 })?;
             } else {
@@ -331,7 +331,7 @@ impl FlatFiles {
         }
 
         let tmp_path = output_path.join("tmp");
-        create_dir_all(&tmp_path).context(FlattererCreateDir {
+        create_dir_all(&tmp_path).context(FlattererCreateDirSnafu {
             filename: tmp_path.to_string_lossy(),
         })?;
 
@@ -379,12 +379,12 @@ impl FlatFiles {
         let csv_path = self.output_path.join("csv");
         if csv {
             if !csv_path.is_dir() {
-                create_dir_all(&csv_path).context(FlattererCreateDir {
+                create_dir_all(&csv_path).context(FlattererCreateDirSnafu {
                     filename: csv_path.to_string_lossy(),
                 })?;
             }
         } else if csv_path.is_dir() {
-            remove_dir_all(&csv_path).context(FlattererRemoveDir {
+            remove_dir_all(&csv_path).context(FlattererRemoveDirSnafu {
                 filename: csv_path.to_string_lossy(),
             })?;
         }
@@ -394,7 +394,7 @@ impl FlatFiles {
     fn set_schema(&mut self, schema: String, schema_titles: String) -> Result<()> {
         let schema_analysis =
             schema_analysis::schema_analysis(&schema, &self.path_separator, schema_titles)
-                .context(JSONRefError {})?;
+                .context(JSONRefSnafu {})?;
         self.order_map = schema_analysis.field_order_map;
         self.field_titles_map = schema_analysis.field_titles_map;
         Ok(())
@@ -668,7 +668,7 @@ impl FlatFiles {
                             WriterBuilder::new()
                                 .flexible(true)
                                 .from_path(output_path.clone())
-                                .context(FlattererCSVWriteError {
+                                .context(FlattererCSVWriteSnafu {
                                     filepath: &output_path,
                                 })?,
                         ),
@@ -741,7 +741,7 @@ impl FlatFiles {
                     if let TmpCSVWriter::Disk(writer) = writer {
                         writer
                             .write_record(&output_row)
-                            .context(FlattererCSVWriteError {
+                            .context(FlattererCSVWriteSnafu {
                                 filepath: &table_metadata.output_path,
                             })?;
                     }
@@ -792,11 +792,11 @@ impl FlatFiles {
 
     pub fn use_tables_csv(&mut self, filepath: String, only_tables: bool) -> Result<()> {
         self.only_tables = only_tables;
-        let mut tables_reader = Reader::from_path(&filepath).context(FlattererCSVReadError {
+        let mut tables_reader = Reader::from_path(&filepath).context(FlattererCSVReadSnafu {
             filepath: &filepath,
         })?;
         for row in tables_reader.deserialize() {
-            let row: TablesRecord = row.context(FlattererCSVReadError {
+            let row: TablesRecord = row.context(FlattererCSVReadSnafu {
                 filepath: &filepath,
             })?;
             self.table_order.insert(row.table_name, row.table_title);
@@ -805,14 +805,14 @@ impl FlatFiles {
     }
 
     pub fn use_fields_csv(&mut self, filepath: String, only_fields: bool) -> Result<()> {
-        let mut fields_reader = Reader::from_path(&filepath).context(FlattererCSVReadError {
+        let mut fields_reader = Reader::from_path(&filepath).context(FlattererCSVReadSnafu {
             filepath: &filepath,
         })?;
 
         self.only_fields = only_fields;
 
         for row in fields_reader.deserialize() {
-            let row: FieldsRecord = row.context(FlattererCSVReadError {
+            let row: FieldsRecord = row.context(FlattererCSVReadSnafu {
                 filepath: &filepath,
             })?;
 
@@ -923,7 +923,7 @@ impl FlatFiles {
 
         for (file, tmp_csv) in self.tmp_csvs.iter_mut() {
             if let TmpCSVWriter::Disk(tmp_csv) = tmp_csv {
-                tmp_csv.flush().context(FlattererFileWriteError {
+                tmp_csv.flush().context(FlattererFileWriteSnafu {
                     filename: file.clone(),
                 })?;
             }
@@ -940,7 +940,7 @@ impl FlatFiles {
         };
 
         let tmp_path = self.output_path.join("tmp");
-        remove_dir_all(&tmp_path).context(FlattererRemoveDir {
+        remove_dir_all(&tmp_path).context(FlattererRemoveDirSnafu {
             filename: tmp_path.to_string_lossy(),
         })?;
         info!("Writing metadata files");
@@ -954,7 +954,7 @@ impl FlatFiles {
 
     pub fn write_data_package(&mut self) -> Result<()> {
         let metadata_file = File::create(self.output_path.join("data_package.json")).context(
-            FlattererFileWriteError {
+            FlattererFileWriteSnafu {
                 filename: "data_package.json",
             },
         )?;
@@ -1004,7 +1004,7 @@ impl FlatFiles {
             "resources": resources
         });
 
-        serde_json::to_writer_pretty(metadata_file, &data_package).context(SerdeWriteError {
+        serde_json::to_writer_pretty(metadata_file, &data_package).context(SerdeWriteSnafu {
             filename: "data_package.json",
         })?;
 
@@ -1013,12 +1013,12 @@ impl FlatFiles {
 
     pub fn write_tables_csv(&mut self) -> Result<()> {
         let filepath = self.output_path.join("tables.csv");
-        let mut table_writer = Writer::from_path(&filepath).context(FlattererCSVWriteError {
+        let mut table_writer = Writer::from_path(&filepath).context(FlattererCSVWriteSnafu {
             filepath: filepath.clone(),
         })?;
         table_writer
             .write_record(["table_name", "table_title"])
-            .context(FlattererCSVWriteError {
+            .context(FlattererCSVWriteSnafu {
                 filepath: filepath.clone(),
             })?;
         for (table_name, table_title) in self.table_order.iter() {
@@ -1028,7 +1028,7 @@ impl FlatFiles {
             }
             table_writer
                 .write_record([table_name, table_title])
-                .context(FlattererCSVWriteError {
+                .context(FlattererCSVWriteSnafu {
                     filepath: filepath.clone(),
                 })?;
         }
@@ -1038,7 +1038,7 @@ impl FlatFiles {
 
     pub fn write_fields_csv(&mut self) -> Result<()> {
         let filepath = self.output_path.join("fields.csv");
-        let mut fields_writer = Writer::from_path(&filepath).context(FlattererCSVWriteError {
+        let mut fields_writer = Writer::from_path(&filepath).context(FlattererCSVWriteSnafu {
             filepath: filepath.clone(),
         })?;
 
@@ -1050,7 +1050,7 @@ impl FlatFiles {
                 "field_title",
                 "count",
             ])
-            .context(FlattererCSVWriteError {
+            .context(FlattererCSVWriteSnafu {
                 filepath: filepath.clone(),
             })?;
         for table_name in self.table_order.keys() {
@@ -1071,7 +1071,7 @@ impl FlatFiles {
                         &metadata.field_titles[order],
                         &metadata.field_counts[order].to_string(),
                     ])
-                    .context(FlattererCSVWriteError {
+                    .context(FlattererCSVWriteSnafu {
                         filepath: filepath.clone(),
                     })?;
             }
@@ -1096,7 +1096,7 @@ impl FlatFiles {
                 .has_headers(false)
                 .flexible(true)
                 .from_path(&reader_filepath)
-                .context(FlattererCSVReadError {
+                .context(FlattererCSVReadSnafu {
                     filepath: reader_filepath.to_string_lossy(),
                 })?;
 
@@ -1109,7 +1109,7 @@ impl FlatFiles {
                 return Err(Error::Terminated {});
             };
             let mut csv_writer = WriterBuilder::new().from_path(filepath.clone()).context(
-                FlattererCSVWriteError {
+                FlattererCSVWriteSnafu {
                     filepath: filepath.clone(),
                 },
             )?;
@@ -1126,7 +1126,7 @@ impl FlatFiles {
 
             csv_writer
                 .write_record(&non_ignored_fields)
-                .context(FlattererCSVWriteError {
+                .context(FlattererCSVWriteSnafu {
                     filepath: filepath.clone(),
                 })?;
 
@@ -1136,7 +1136,7 @@ impl FlatFiles {
                 if self.preview != 0 && num == self.preview {
                     break;
                 }
-                let this_row = row.context(FlattererCSVWriteError {
+                let this_row = row.context(FlattererCSVWriteSnafu {
                     filepath: &filepath,
                 })?;
                 let table_order = metadata.order.clone();
@@ -1154,7 +1154,7 @@ impl FlatFiles {
 
                 csv_writer
                     .write_byte_record(&output_row)
-                    .context(FlattererCSVWriteError {
+                    .context(FlattererCSVWriteSnafu {
                         filepath: &filepath,
                     })?;
                 output_row.clear();
@@ -1218,14 +1218,14 @@ impl FlatFiles {
 
             let mut worksheet = workbook
                 .add_worksheet(Some(&new_table_title))
-                .context(FlattererXLSXError {})?;
+                .context(FlattererXLSXSnafu {})?;
 
             let filepath = tmp_path.join(format!("{}.csv", table_name));
             let csv_reader = ReaderBuilder::new()
                 .has_headers(false)
                 .flexible(true)
                 .from_path(filepath.clone())
-                .context(FlattererCSVReadError {
+                .context(FlattererCSVReadSnafu {
                     filepath: filepath.to_string_lossy(),
                 })?;
 
@@ -1243,14 +1243,14 @@ impl FlatFiles {
 
                     worksheet
                         .write_string(0, col_index, &title, None)
-                        .context(FlattererXLSXError {})?;
+                        .context(FlattererXLSXSnafu {})?;
                     col_index += 1;
                 }
             }
 
             for (row_num, row) in csv_reader.into_records().enumerate() {
                 col_index = 0;
-                let this_row = row.context(FlattererCSVReadError {
+                let this_row = row.context(FlattererCSVReadSnafu {
                     filepath: filepath.to_string_lossy(),
                 })?;
 
@@ -1275,53 +1275,53 @@ impl FlatFiles {
                         if let Ok(number) = cell.parse::<f64>() {
                             worksheet
                                 .write_number(
-                                    (row_num + 1).try_into().context(FlattererIntError {})?,
+                                    (row_num + 1).try_into().context(FlattererIntSnafu {})?,
                                     col_index,
                                     number,
                                     None,
                                 )
-                                .context(FlattererXLSXError {})?;
+                                .context(FlattererXLSXSnafu {})?;
                         } else {
                             worksheet
                                 .write_string(
-                                    (row_num + 1).try_into().context(FlattererIntError {})?,
+                                    (row_num + 1).try_into().context(FlattererIntSnafu {})?,
                                     col_index,
                                     &cell,
                                     None,
                                 )
-                                .context(FlattererXLSXError {})?;
+                                .context(FlattererXLSXSnafu {})?;
                         };
                     } else {
                         worksheet
                             .write_string(
-                                (row_num + 1).try_into().context(FlattererIntError {})?,
+                                (row_num + 1).try_into().context(FlattererIntSnafu {})?,
                                 col_index,
                                 &cell,
                                 None,
                             )
-                            .context(FlattererXLSXError {})?;
+                            .context(FlattererXLSXSnafu {})?;
                     }
                     col_index += 1
                 }
             }
         }
-        workbook.close().context(FlattererXLSXError {})?;
+        workbook.close().context(FlattererXLSXSnafu {})?;
 
         Ok(())
     }
 
     pub fn write_postgresql(&mut self) -> Result<()> {
         let postgresql_dir_path = self.output_path.join("postgresql");
-        create_dir_all(&postgresql_dir_path).context(FlattererCreateDir {
+        create_dir_all(&postgresql_dir_path).context(FlattererCreateDirSnafu {
             filename: postgresql_dir_path.to_string_lossy(),
         })?;
 
         let mut postgresql_schema = File::create(postgresql_dir_path.join("postgresql_schema.sql"))
-            .context(FlattererFileWriteError {
+            .context(FlattererFileWriteSnafu {
                 filename: "postgresql_schema.sql",
             })?;
         let mut postgresql_load = File::create(postgresql_dir_path.join("postgresql_load.sql"))
-            .context(FlattererFileWriteError {
+            .context(FlattererFileWriteSnafu {
                 filename: "postgresql_load.sql",
             })?;
 
@@ -1336,7 +1336,7 @@ impl FlatFiles {
                 "CREATE TABLE \"{ }\"(",
                 table_title.to_lowercase()
             )
-            .context(FlattererFileWriteError {
+            .context(FlattererFileWriteSnafu {
                 filename: "postgresql_schema.sql",
             })?;
 
@@ -1352,11 +1352,11 @@ impl FlatFiles {
                 ));
             }
             write!(postgresql_schema, "{}", fields.join(",\n")).context(
-                FlattererFileWriteError {
+                FlattererFileWriteSnafu {
                     filename: "postgresql_schema.sql",
                 },
             )?;
-            write!(postgresql_schema, ");\n\n").context(FlattererFileWriteError {
+            write!(postgresql_schema, ");\n\n").context(FlattererFileWriteSnafu {
                 filename: "postgresql_schema.sql",
             })?;
 
@@ -1366,7 +1366,7 @@ impl FlatFiles {
                 table_title.to_lowercase(),
                 format!("csv/{}.csv", table_title),
             )
-            .context(FlattererFileWriteError {
+            .context(FlattererFileWriteSnafu {
                 filename: "postgresql_load.sql",
             })?;
         }
@@ -1376,22 +1376,22 @@ impl FlatFiles {
 
     pub fn write_sqlite(&mut self) -> Result<()> {
         let sqlite_dir_path = self.output_path.join("sqlite");
-        create_dir_all(&sqlite_dir_path).context(FlattererCreateDir {
+        create_dir_all(&sqlite_dir_path).context(FlattererCreateDirSnafu {
             filename: sqlite_dir_path.to_string_lossy(),
         })?;
 
         let mut sqlite_schema = File::create(sqlite_dir_path.join("sqlite_schema.sql")).context(
-            FlattererFileWriteError {
+            FlattererFileWriteSnafu {
                 filename: "sqlite_schema.sql",
             },
         )?;
         let mut sqlite_load = File::create(sqlite_dir_path.join("sqlite_load.sql")).context(
-            FlattererFileWriteError {
+            FlattererFileWriteSnafu {
                 filename: "sqlite_schema.sql",
             },
         )?;
 
-        writeln!(sqlite_load, ".mode csv ").context(FlattererFileWriteError {
+        writeln!(sqlite_load, ".mode csv ").context(FlattererFileWriteSnafu {
             filename: "sqlite_schema.sql",
         })?;
 
@@ -1406,7 +1406,7 @@ impl FlatFiles {
                 "CREATE TABLE \"{ }\"(",
                 table_title.to_lowercase()
             )
-            .context(FlattererFileWriteError {
+            .context(FlattererFileWriteSnafu {
                 filename: "sqlite_schema.sql",
             })?;
 
@@ -1421,10 +1421,10 @@ impl FlatFiles {
                     postgresql::to_postgresql_type(&metadata.field_type[order])
                 ));
             }
-            write!(sqlite_schema, "{}", fields.join(",\n")).context(FlattererFileWriteError {
+            write!(sqlite_schema, "{}", fields.join(",\n")).context(FlattererFileWriteSnafu {
                 filename: "sqlite_schema.sql",
             })?;
-            write!(sqlite_schema, ");\n\n").context(FlattererFileWriteError {
+            write!(sqlite_schema, ");\n\n").context(FlattererFileWriteSnafu {
                 filename: "sqlite_schema.sql",
             })?;
 
@@ -1434,7 +1434,7 @@ impl FlatFiles {
                 format!("csv/{}.csv", table_title),
                 table_title.to_lowercase()
             )
-            .context(FlattererFileWriteError {
+            .context(FlattererFileWriteSnafu {
                 filename: "sqlite_load.sql",
             })?;
         }
@@ -1564,15 +1564,15 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<F
     let stream = Deserializer::from_reader(input).into_iter::<Value>();
     for (num, value_result) in stream.enumerate() {
         if value_result.is_err() {
-            stop_sender.send(()).context(ChannelStopSendError {})?;
-            remove_dir_all(&output_path).context(FlattererRemoveDir {
+            stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                 filename: output_path.to_string_lossy(),
             })?;
         }
-        let value = value_result.context(SerdeReadError {})?;
+        let value = value_result.context(SerdeReadSnafu {})?;
         if !value.is_object() {
-            stop_sender.send(()).context(ChannelStopSendError {})?;
-            remove_dir_all(&output_path).context(FlattererRemoveDir {
+            stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                 filename: output_path.to_string_lossy(),
             })?;
             return Err(Error::FlattererProcessError {message: format!("The JSON provided as input is not an array of objects: Value at array position {} is not an object: value is `{}`", num, value)});
@@ -1586,7 +1586,7 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<F
     match thread.join() {
         Ok(result) => {
             if let Err(err) = result {
-                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                     filename: output_path.to_string_lossy(),
                 })?;
                 Err(err)
@@ -1617,7 +1617,7 @@ pub fn flatten_new<R: Read>(
             .collect_vec();
         let mut count = 0;
         for item in item_receiver.iter() {
-            let value: Value = serde_json::from_str(&item.json).context(SerdeReadError {})?;
+            let value: Value = serde_json::from_str(&item.json).context(SerdeReadSnafu {})?;
 
             if !value.is_object() {
                 return Err(Error::FlattererProcessError {
@@ -1676,8 +1676,8 @@ pub fn flatten_new<R: Read>(
 
             if let Err(error) = parser.parse(&mut input) {
                 log::debug!("Parse error, whilst in main parsing");
-                stop_sender.send(()).context(ChannelStopSendError {})?;
-                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                     filename: output_path.to_string_lossy(),
                 })?;
                 return Err(Error::YAJLishParseError {
@@ -1691,8 +1691,8 @@ pub fn flatten_new<R: Read>(
                     .contains("Did not reach a ParseComplete status")
                 {
                     log::debug!("Parse error, whilst in cleaning up parsing");
-                    stop_sender.send(()).context(ChannelStopSendError {})?;
-                    remove_dir_all(&output_path).context(FlattererRemoveDir {
+                    stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+                    remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                         filename: output_path.to_string_lossy(),
                     })?;
                     return Err(Error::YAJLishParseError {
@@ -1705,7 +1705,7 @@ pub fn flatten_new<R: Read>(
         top_level_type = handler.top_level_type.clone();
 
         if !handler.error.is_empty() {
-            remove_dir_all(&output_path).context(FlattererRemoveDir {
+            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                 filename: output_path.to_string_lossy(),
             })?;
             return Err(Error::FlattererProcessError {
@@ -1721,7 +1721,7 @@ pub fn flatten_new<R: Read>(
                 .to_string(),
             path: vec![],
         };
-        item_sender.send(item).context(ChannelItemError {})?;
+        item_sender.send(item).context(ChannelItemSnafu {})?;
     }
     drop(item_sender);
 
@@ -1729,7 +1729,7 @@ pub fn flatten_new<R: Read>(
         Ok(result) => {
             if let Err(err) = result {
                 log::debug!("Error on thread join {}", err);
-                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                     filename: output_path.to_string_lossy(),
                 })?;
                 return Err(err);
@@ -1777,7 +1777,7 @@ pub fn flatten<R: Read>(
                     ),
                 });
             }
-            let value = serde_json::from_slice::<Value>(&buf).context(SerdeReadError {})?;
+            let value = serde_json::from_slice::<Value>(&buf).context(SerdeReadSnafu {})?;
 
             if !value.is_object() {
                 return Err(Error::FlattererProcessError {
@@ -1822,8 +1822,8 @@ pub fn flatten<R: Read>(
 
     if let Err(error) = parser.parse(&mut input) {
         log::debug!("Parse error, whilst in main parsing");
-        stop_sender.send(()).context(ChannelStopSendError {})?;
-        remove_dir_all(&output_path).context(FlattererRemoveDir {
+        stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+        remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
             filename: output_path.to_string_lossy(),
         })?;
         return Err(Error::YAJLishParseError {
@@ -1838,8 +1838,8 @@ pub fn flatten<R: Read>(
             .contains("Did not reach a ParseComplete status")
         {
             log::debug!("Parse error, whilst in cleaning up parsing");
-            stop_sender.send(()).context(ChannelStopSendError {})?;
-            remove_dir_all(&output_path).context(FlattererRemoveDir {
+            stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                 filename: output_path.to_string_lossy(),
             })?;
             return Err(Error::YAJLishParseError {
@@ -1852,7 +1852,7 @@ pub fn flatten<R: Read>(
         jl_writer
             .buf_sender
             .send((jl_writer.buf.clone(), true))
-            .context(ChannelBufSendError {})?;
+            .context(ChannelBufSendSnafu {})?;
     }
 
     drop(jl_writer);
@@ -1861,7 +1861,7 @@ pub fn flatten<R: Read>(
         Ok(result) => {
             if let Err(err) = result {
                 log::debug!("Error on thread join {}", err);
-                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                     filename: output_path.to_string_lossy(),
                 })?;
                 return Err(err);

@@ -43,9 +43,9 @@ impl SchemaAnalysis {
         jsonref.set_reference_key("___ref___");
         let value: Value;
         if self.schema.starts_with("http") {
-            value = jsonref.deref_url(&self.schema).context(FlattererJSONRefError {schema: &self.schema})?;
+            value = jsonref.deref_url(&self.schema).context(FlattererJSONRefSnafu {schema: &self.schema})?;
         } else {
-            value = jsonref.deref_file(&self.schema).context(FlattererJSONRefError {schema: &self.schema})?;
+            value = jsonref.deref_file(&self.schema).context(FlattererJSONRefSnafu {schema: &self.schema})?;
         }
 
         self.parse_value(value);
