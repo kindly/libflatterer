@@ -1,18 +1,15 @@
+use snafu::Snafu;
 use std::io::BufReader;
 use yajlish::{Context, Handler, Parser, Status};
-use snafu::Snafu;
 
 #[non_exhaustive]
 #[derive(Debug, Snafu)]
 pub enum Error {
     #[snafu(display("Error guessing array location: {}", error))]
-    YajlishError {
-        error: String
-    }
+    YajlishError { error: String },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
-
 
 pub struct GuessArray {
     guess: String,
@@ -37,7 +34,7 @@ impl GuessArray {
 impl Handler for GuessArray {
     fn handle_map_key(&mut self, _ctx: &Context, key: &str) -> Status {
         self.keys.pop();
-        self.keys.push(Some(key[1..key.len()-1].to_string()));
+        self.keys.push(Some(key[1..key.len() - 1].to_string()));
         Status::Continue
     }
 
@@ -93,7 +90,8 @@ impl Handler for GuessArray {
         }
         if self.new_array {
             if self.path_guess.is_empty() {
-                let path_guess: Vec<String> = self.keys.iter().filter_map(|i| {i.to_owned()}).collect();
+                let path_guess: Vec<String> =
+                    self.keys.iter().filter_map(|i| i.to_owned()).collect();
                 self.path_guess = path_guess.join("/");
             }
         }
@@ -123,15 +121,16 @@ impl Handler for GuessArray {
     }
 }
 
-
-pub fn guess_array(json: &str) -> Result<(String, String)>  {
+pub fn guess_array(json: &str) -> Result<(String, String)> {
     let mut handler = GuessArray::new();
     let mut parser = Parser::new(&mut handler);
     let string = json.to_string();
     let mut reader = BufReader::new(string.as_bytes());
 
     if let Err(error) = parser.parse(&mut reader) {
-        return Err(Error::YajlishError {error: error.to_string()})
+        return Err(Error::YajlishError {
+            error: error.to_string(),
+        });
     }
     let mut guess = handler.guess.to_string();
     let mut path_guess = handler.path_guess.to_string();
@@ -144,7 +143,7 @@ pub fn guess_array(json: &str) -> Result<(String, String)>  {
         path_guess = "".to_string();
     }
 
-    return Ok((guess, path_guess))
+    return Ok((guess, path_guess));
 }
 
 #[cfg(test)]
@@ -152,10 +151,11 @@ mod tests {
     use super::*;
 
     fn guess_assert(json: &str, guess: &str, path_guess: &str) {
-
         println!("{}", json);
-        assert_eq!(guess_array(json).unwrap(), (guess.to_string(), path_guess.to_string()));
-
+        assert_eq!(
+            guess_array(json).unwrap(),
+            (guess.to_string(), path_guess.to_string())
+        );
     }
 
     #[test]
@@ -171,4 +171,3 @@ mod tests {
         guess_assert(r#"{"moo": [{"a": "b" "#, "list_in_object", "moo");
     }
 }
-

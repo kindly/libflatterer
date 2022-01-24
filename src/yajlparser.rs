@@ -98,7 +98,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
         self.push("null");
         self.over_limit();
         if !self.error.is_empty() {
-            return Status::Abort
+            return Status::Abort;
         }
         self.send_json(_ctx)
     }
@@ -109,7 +109,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
         self.push(&format!("{}", _val));
         self.over_limit();
         if !self.error.is_empty() {
-            return Status::Abort
+            return Status::Abort;
         }
         self.send_json(_ctx)
     }
@@ -120,7 +120,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
         self.push(&format!("{}", _val));
         self.over_limit();
         if !self.error.is_empty() {
-            return Status::Abort
+            return Status::Abort;
         }
         self.send_json(_ctx)
     }
@@ -134,7 +134,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
         self.push(bool_str);
         self.over_limit();
         if !self.error.is_empty() {
-            return Status::Abort
+            return Status::Abort;
         }
         self.send_json(_ctx)
     }
@@ -144,7 +144,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
         self.push(_val);
         self.over_limit();
         if !self.error.is_empty() {
-            return Status::Abort
+            return Status::Abort;
         }
         self.send_json(_ctx)
     }
@@ -200,7 +200,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
         self.push(":");
         self.over_limit();
         if !self.error.is_empty() {
-            return Status::Abort
+            return Status::Abort;
         }
 
         Status::Continue
@@ -234,7 +234,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
             });
         }
         if !self.error.is_empty() {
-            return Status::Abort
+            return Status::Abort;
         }
         Status::Continue
     }

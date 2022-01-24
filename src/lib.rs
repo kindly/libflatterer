@@ -606,7 +606,9 @@ impl FlatFiles {
                     [
                         self.row_number.to_string(),
                         ".".to_string(),
-                        one_to_many_full_paths[one_to_many_full_paths.len() -1].iter().join("."),
+                        one_to_many_full_paths[one_to_many_full_paths.len() - 1]
+                            .iter()
+                            .join("."),
                     ]
                     .concat(),
                 ),
@@ -1598,7 +1600,12 @@ pub fn flatten<R: Read>(
     let top_level_type;
 
     {
-        let mut handler = yajlparser::ParseJson::new(&mut outer, item_sender.clone(), json_stream, 500 * 1024 * 1024);
+        let mut handler = yajlparser::ParseJson::new(
+            &mut outer,
+            item_sender.clone(),
+            json_stream,
+            500 * 1024 * 1024,
+        );
 
         {
             let mut parser = Parser::new(&mut handler);
@@ -1638,7 +1645,7 @@ pub fn flatten<R: Read>(
                 filename: output_path.to_string_lossy(),
             })?;
             return Err(Error::FlattererProcessError {
-                message: handler.error
+                message: handler.error,
             });
         }
     }
@@ -1696,18 +1703,21 @@ mod tests {
                 .unwrap();
         }
         if let Some(path_values) = options["path"].as_array() {
-            path = path_values.iter().map(|item| {item.as_str().unwrap().to_string()}).collect();
+            path = path_values
+                .iter()
+                .map(|item| item.as_str().unwrap().to_string())
+                .collect();
         }
 
         let result;
-        
-        let stream = if file.ends_with(".json") {false} else {true};
+
+        let stream = if file.ends_with(".json") { false } else { true };
 
         result = flatten(
             BufReader::new(File::open(file).unwrap()),
             flat_files,
             path,
-            stream
+            stream,
         );
 
         if let Err(error) = result {
@@ -1814,10 +1824,7 @@ mod tests {
     fn full_test_select() {
         test_output(
             "fixtures/basic_with_multiple.json",
-            vec![
-                "csv/main.csv",
-                "csv/platforms.csv",
-            ],
+            vec!["csv/main.csv", "csv/platforms.csv"],
             json!({"path": ["moreGames"]}),
         )
     }
