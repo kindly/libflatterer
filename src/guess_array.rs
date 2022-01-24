@@ -124,7 +124,7 @@ impl Handler for GuessArray {
 }
 
 
-pub fn parse(json: &str) -> Result<(String, String)>  {
+pub fn guess_array(json: &str) -> Result<(String, String)>  {
     let mut handler = GuessArray::new();
     let mut parser = Parser::new(&mut handler);
     let string = json.to_string();
@@ -154,7 +154,7 @@ mod tests {
     fn guess_assert(json: &str, guess: &str, path_guess: &str) {
 
         println!("{}", json);
-        assert_eq!(parse(json).unwrap(), (guess.to_string(), path_guess.to_string()));
+        assert_eq!(guess_array(json).unwrap(), (guess.to_string(), path_guess.to_string()));
 
     }
 

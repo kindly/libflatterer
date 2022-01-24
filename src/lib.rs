@@ -31,7 +31,8 @@
 //! flatten(
 //!    BufReader::new(File::open("fixtures/basic.json").unwrap()), // reader
 //!    flat_files, // FlatFile instance.
-//!    vec![]); // Path to array.
+//!    vec![],
+//!    false); // Path to array.
 //!```
 mod guess_array;
 mod postgresql;
@@ -53,17 +54,15 @@ use itertools::Itertools;
 use log::{info, warn};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Deserializer, Map, Value};
+use serde_json::{json, Map, Value};
 use smallvec::{smallvec, SmallVec};
 use smartstring::alias::String as SmartString;
 use snafu::{Backtrace, ResultExt, Snafu};
 use xlsxwriter::Workbook;
-use yajlish::ndjson_handler::NdJsonHandler;
 use yajlish::Parser;
 use yajlparser::Item;
 
-pub use guess_array::parse;
-pub use yajlish::ndjson_handler::Selector;
+pub use guess_array::guess_array;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -1528,77 +1527,7 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     new_parts.join(seperator)
 }
 
-pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<FlatFiles> {
-    let (value_sender, value_receiver) = bounded(1000);
-    let (stop_sender, stop_receiver) = bounded(1);
-    let output_path = flat_files.output_path.clone();
-    info!("Reading JSON input stream and saving output into temporary CSV files");
-
-    let thread = thread::spawn(move || -> Result<FlatFiles> {
-        let mut count = 0;
-        for value in value_receiver {
-            flat_files.process_value(value, vec![]);
-            flat_files.create_rows()?;
-            count += 1;
-            if count % 500000 == 0 {
-                if TERMINATE.load(Ordering::SeqCst) {
-                    log::debug!("Terminating..");
-                    return Err(Error::Terminated {});
-                };
-                if stop_receiver.try_recv().is_ok() {
-                    return Ok(flat_files); // This is really an error but it should be handled by main thread.
-                }
-                info!("Processed {} values so far.", count);
-            }
-        }
-        if stop_receiver.try_recv().is_ok() {
-            return Ok(flat_files); // This is really an error but it should be handled by main thread.
-        }
-
-        info!("Finished processing {} value(s)", count);
-
-        flat_files.write_files()?;
-        Ok(flat_files)
-    });
-
-    let stream = Deserializer::from_reader(input).into_iter::<Value>();
-    for (num, value_result) in stream.enumerate() {
-        if value_result.is_err() {
-            stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                filename: output_path.to_string_lossy(),
-            })?;
-        }
-        let value = value_result.context(SerdeReadSnafu {})?;
-        if !value.is_object() {
-            stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                filename: output_path.to_string_lossy(),
-            })?;
-            return Err(Error::FlattererProcessError {message: format!("The JSON provided as input is not an array of objects: Value at array position {} is not an object: value is `{}`", num, value)});
-        };
-        if value_sender.send(value).is_err() {
-            break;
-        };
-    }
-    drop(value_sender);
-
-    match thread.join() {
-        Ok(result) => {
-            if let Err(err) = result {
-                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                    filename: output_path.to_string_lossy(),
-                })?;
-                Err(err)
-            } else {
-                Ok(result.unwrap())
-            }
-        }
-        Err(err) => panic::resume_unwind(err),
-    }
-}
-
-pub fn flatten_new<R: Read>(
+pub fn flatten<R: Read>(
     mut input: BufReader<R>,
     mut flat_files: FlatFiles,
     path: Vec<String>,
@@ -1740,138 +1669,6 @@ pub fn flatten_new<R: Read>(
     }
 }
 
-type VecBool = (Vec<u8>, bool);
-
-pub fn flatten<R: Read>(
-    mut input: BufReader<R>,
-    mut flat_files: FlatFiles,
-    selectors: Vec<Selector>,
-) -> Result<FlatFiles> {
-    let (buf_sender, buf_receiver): (Sender<VecBool>, Receiver<VecBool>) = bounded(1000);
-    let (stop_sender, stop_receiver) = bounded(1);
-    info!("Reading JSON input file and saving output into temporary CSV files");
-
-    let output_path = flat_files.output_path.clone();
-
-    let thread = thread::spawn(move || -> Result<FlatFiles> {
-        let mut count = 0;
-        for (buf, extra) in buf_receiver.iter() {
-            if buf.is_empty() {
-                return Err(Error::FlattererProcessError {
-                    message: "The JSON provided as input contains an empty array".to_string(),
-                });
-            }
-            if extra {
-                log::debug!("Extra data found in input, unspecified behaviour in yajlish");
-                let mut extra_detail = "";
-
-                if buf[0] == 123 {
-                    // 123 is a `{`
-                    extra_detail = ": It looks like you have supplied an object, either supply a correct `--path` or try the `--json-lines` option."
-                }
-
-                return Err(Error::FlattererProcessError {
-                    message: format!(
-                        "{}{}",
-                        "The JSON provided as input is not an array of objects", extra_detail
-                    ),
-                });
-            }
-            let value = serde_json::from_slice::<Value>(&buf).context(SerdeReadSnafu {})?;
-
-            if !value.is_object() {
-                return Err(Error::FlattererProcessError {
-                    message: format!(
-                        "Value at array position {} is not an object: value is `{}`",
-                        count, value
-                    ),
-                });
-            }
-            flat_files.process_value(value, vec![]);
-            flat_files.create_rows()?;
-            count += 1;
-            if count % 500000 == 0 {
-                info!("Processed {} values so far.", count);
-                if TERMINATE.load(Ordering::SeqCst) {
-                    log::debug!("Terminating..");
-                    return Err(Error::Terminated {});
-                };
-                if stop_receiver.try_recv().is_ok() {
-                    return Ok(flat_files); // This is really an error but it should be handled by main thread.
-                }
-            }
-        }
-        if stop_receiver.try_recv().is_ok() {
-            return Ok(flat_files); // This is really an error but it should be handled by main thread.
-        }
-        if TERMINATE.load(Ordering::SeqCst) {
-            return Err(Error::Terminated {});
-        };
-        info!("Finished processing {} value(s)", count);
-
-        flat_files.write_files()?;
-        Ok(flat_files)
-    });
-
-    let mut jl_writer = JLWriter {
-        buf: vec![],
-        buf_sender,
-    };
-    let mut handler = NdJsonHandler::new(&mut jl_writer, selectors);
-    let mut parser = Parser::new(&mut handler);
-
-    if let Err(error) = parser.parse(&mut input) {
-        log::debug!("Parse error, whilst in main parsing");
-        stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-        remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-            filename: output_path.to_string_lossy(),
-        })?;
-        return Err(Error::YAJLishParseError {
-            error: format!("Invalid JSON due to the following error: {}", error),
-        });
-    }
-
-    if let Err(error) = parser.finish_parse() {
-        // never seems to reach parse complete on stream data
-        if !error
-            .to_string()
-            .contains("Did not reach a ParseComplete status")
-        {
-            log::debug!("Parse error, whilst in cleaning up parsing");
-            stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                filename: output_path.to_string_lossy(),
-            })?;
-            return Err(Error::YAJLishParseError {
-                error: format!("Invalid JSON due to the following error: {}", error),
-            });
-        }
-    }
-
-    if !jl_writer.buf.is_empty() {
-        jl_writer
-            .buf_sender
-            .send((jl_writer.buf.clone(), true))
-            .context(ChannelBufSendSnafu {})?;
-    }
-
-    drop(jl_writer);
-
-    match thread.join() {
-        Ok(result) => {
-            if let Err(err) = result {
-                log::debug!("Error on thread join {}", err);
-                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                    filename: output_path.to_string_lossy(),
-                })?;
-                return Err(err);
-            }
-            Ok(result.unwrap())
-        }
-        Err(err) => panic::resume_unwind(err),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1906,7 +1703,7 @@ mod tests {
         
         let stream = if file.ends_with(".json") {false} else {true};
 
-        result = flatten_new(
+        result = flatten(
             BufReader::new(File::open(file).unwrap()),
             flat_files,
             path,
