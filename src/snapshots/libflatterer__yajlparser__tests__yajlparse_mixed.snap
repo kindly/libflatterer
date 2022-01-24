@@ -1,0 +1,21 @@
+---
+source: src/yajlparser.rs
+expression: "parse(\"fixtures/yajl_array_mixed.json\")"
+
+---
+- - a: b
+  - 2
+  - - e
+    - f
+  - - 1
+    - 2
+  - moon
+  - a: c
+- - - moo
+  - - moo
+  - - moo
+  - - moo
+  - - moo
+  - - moo
+- "{\"moo\":[]}"
+

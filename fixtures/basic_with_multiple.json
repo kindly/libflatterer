@@ -1,0 +1,39 @@
+{
+  "date": "2001-01-01",
+  "games": [
+    {
+      "id": 1,
+      "platforms": [{ "name": "PC" }],
+      "rating": {
+        "code": "E",
+        "name": "Everyone"
+      }
+    },
+    {
+      "id": 2,
+      "platforms": [{ "name": "Xbox" }, { "name": "Playstation" }],
+      "rating": {
+        "code": "E",
+        "name": "Everyone"
+      }
+    }
+  ],
+  "moreGames": [
+    {
+      "id": 1,
+      "platforms": [{ "name": "PC" }],
+      "rating": {
+        "code": "E",
+        "name": "Everyone"
+      }
+    },
+    {
+      "id": 2,
+      "platforms": [{ "name": "Xbox" }, { "name": "Playstation" }],
+      "rating": {
+        "code": "E",
+        "name": "Everyone"
+      }
+    }
+  ]
+}

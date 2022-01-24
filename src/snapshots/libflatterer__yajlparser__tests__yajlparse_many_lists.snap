@@ -1,0 +1,21 @@
+---
+source: src/yajlparser.rs
+expression: "parse(\"fixtures/yajl_many_lists.json\")"
+
+---
+- - a: b
+  - a: c
+  - a: b
+  - a: c
+  - a: b
+  - a
+- - - moo
+  - - moo
+  - - moo2
+    - foo
+  - - moo2
+    - foo
+  - - moo3
+  - - moo3
+- "{\"moo\":[],\"moo2\":{\"what\":\"here\",\"foo\":[]},\"moo3\":[]}"
+

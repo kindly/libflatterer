@@ -1,0 +1,9 @@
+---
+source: src/lib.rs
+expression: output
+
+---
+- "_link,_link_main,id,rating_code,rating_name"
+- "0.games.0,0,1,E,Everyone"
+- "0.games.1,0,2,E,Everyone"
+

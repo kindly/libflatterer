@@ -1,0 +1,27 @@
+---
+source: src/lib.rs
+expression: output
+
+---
+- "table_name,field_name,field_type,field_title,count"
+- "games,_link,text,_link,2"
+- "games,_link_main,text,_link_main,2"
+- "games,id,number,id,2"
+- "games,rating_code,text,rating_code,2"
+- "games,rating_name,text,rating_name,2"
+- "games_platforms,_link,text,_link,3"
+- "games_platforms,_link_games,text,_link_games,3"
+- "games_platforms,_link_main,text,_link_main,3"
+- "games_platforms,name,text,name,3"
+- "moreGames,_link,text,_link,2"
+- "moreGames,_link_main,text,_link_main,2"
+- "moreGames,id,number,id,2"
+- "moreGames,rating_code,text,rating_code,2"
+- "moreGames,rating_name,text,rating_name,2"
+- "moreGames_platforms,_link,text,_link,3"
+- "moreGames_platforms,_link_moreGames,text,_link_moreGames,3"
+- "moreGames_platforms,_link_main,text,_link_main,3"
+- "moreGames_platforms,name,text,name,3"
+- "main,_link,text,_link,1"
+- "main,date,date,date,1"
+

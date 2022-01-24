@@ -1,0 +1,9 @@
+---
+source: src/yajlparser.rs
+expression: "parse(\"fixtures/yajl_array_not_obj.json\")"
+
+---
+- []
+- []
+- "{\"moo\":[1,2],\"foo\":[\"a\",\"b\"],\"doo\":[\"a\",{\"c\":\"d\"}]}"
+

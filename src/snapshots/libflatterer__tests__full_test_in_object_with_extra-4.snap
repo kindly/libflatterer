@@ -1,0 +1,8 @@
+---
+source: src/lib.rs
+expression: output
+
+---
+- "_link,date"
+- "0,2001-01-01"
+

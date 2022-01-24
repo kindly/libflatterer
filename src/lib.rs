@@ -33,9 +33,10 @@
 //!    flat_files, // FlatFile instance.
 //!    vec![]); // Path to array.
 //!```
+mod guess_array;
 mod postgresql;
 mod schema_analysis;
-mod guess_array;
+mod yajlparser;
 
 use indexmap::IndexMap as HashMap;
 use std::convert::TryInto;
@@ -43,14 +44,14 @@ use std::fmt;
 use std::fs::{create_dir_all, remove_dir_all, File};
 use std::io::{self, BufReader, Read, Write};
 use std::path::PathBuf;
-use std::{panic, thread};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::{panic, thread};
 
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 use itertools::Itertools;
+use log::{info, warn};
 use regex::Regex;
-use log::{warn, info};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Deserializer, Map, Value};
 use smallvec::{smallvec, SmallVec};
@@ -59,9 +60,10 @@ use snafu::{Backtrace, ResultExt, Snafu};
 use xlsxwriter::Workbook;
 use yajlish::ndjson_handler::NdJsonHandler;
 use yajlish::Parser;
+use yajlparser::Item;
 
-pub use yajlish::ndjson_handler::Selector;
 pub use guess_array::parse;
+pub use yajlish::ndjson_handler::Selector;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -137,6 +139,8 @@ pub enum Error {
     #[snafu(display(""))]
     ChannelSendError { source: SendError<Value> },
     #[snafu(display(""))]
+    ChannelItemError { source: SendError<Item> },
+    #[snafu(display(""))]
     ChannelBufSendError { source: SendError<(Vec<u8>, bool)> },
     #[snafu(display(""))]
     ChannelStopSendError { source: SendError<()> },
@@ -173,7 +177,9 @@ pub struct FlatFiles {
     pub xlsx: bool,
     pub main_table_name: String,
     emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]>,
-    row_number: u128,
+    row_number: usize,
+    sub_array_row_number: usize,
+    current_path: Vec<SmartString>,
     date_regexp: Regex,
     table_rows: HashMap<String, Vec<Map<String, Value>>>,
     tmp_csvs: HashMap<String, TmpCSVWriter>,
@@ -261,8 +267,13 @@ impl Write for JLWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf == [b'\n'] {
             if let Err(_) = self.buf_sender.send((self.buf.clone(), false)) {
-                log::error!("Unable to process any data, most likely caused by termination of worker");
-                return Err(io::Error::new(io::ErrorKind::Other, "Unable to process any data, most likely caused by termination of worker"));
+                log::error!(
+                    "Unable to process any data, most likely caused by termination of worker"
+                );
+                return Err(io::Error::new(
+                    io::ErrorKind::Other,
+                    "Unable to process any data, most likely caused by termination of worker",
+                ));
             }
             self.buf.clear();
             Ok(buf.len())
@@ -333,6 +344,8 @@ impl FlatFiles {
             main_table_name: [table_prefix.clone(), main_table_name].concat(),
             emit_obj: smallvec_emit_obj,
             row_number: 0,
+            sub_array_row_number: 0,
+            current_path: vec![],
             date_regexp: Regex::new(r"^([1-3]\d{3})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)((-(\d{2}):(\d{2})|Z)?))?$").unwrap(),
             table_rows: HashMap::new(),
             tmp_csvs: HashMap::new(),
@@ -481,7 +494,7 @@ impl FlatFiles {
                             }
                         }
 
-                        if let Value::Object(my_obj) = my_value { 
+                        if let Value::Object(my_obj) = my_value {
                             if !parent_one_to_one_key && !my_obj.is_empty() {
                                 self.handle_obj(
                                     my_obj,
@@ -586,6 +599,18 @@ impl FlatFiles {
             obj.insert(
                 String::from("_link"),
                 Value::String(self.row_number.to_string()),
+            );
+        } else {
+            obj.insert(
+                String::from("_link"),
+                Value::String(
+                    [
+                        self.row_number.to_string(),
+                        ".".to_string(),
+                        one_to_many_full_paths[one_to_many_full_paths.len() -1].iter().join("."),
+                    ]
+                    .concat(),
+                ),
             );
         }
 
@@ -729,18 +754,39 @@ impl FlatFiles {
         Ok(())
     }
 
-    pub fn process_value(&mut self, value: Value) {
+    pub fn process_value(&mut self, value: Value, initial_path: Vec<SmartString>) {
         if let Value::Object(obj) = value {
+            let has_path = !initial_path.is_empty();
+            if initial_path != self.current_path {
+                self.sub_array_row_number = 0;
+                self.current_path = initial_path.clone();
+            }
+            let mut full_path =
+                SmallVec::from_iter(initial_path.iter().map(|item| PathItem::Key(item.clone())));
+            let no_index_path = SmallVec::from_vec(initial_path);
+            let mut one_to_many_full_paths = SmallVec::new();
+            let mut one_to_many_no_index_paths = SmallVec::new();
+
+            if has_path {
+                full_path.push(PathItem::Index(self.sub_array_row_number));
+                one_to_many_full_paths.push(full_path.clone());
+                one_to_many_no_index_paths.push(no_index_path.clone());
+            }
+
             self.handle_obj(
                 obj,
                 true,
-                smallvec![],
-                smallvec![],
-                smallvec![],
-                smallvec![],
+                full_path,
+                no_index_path,
+                one_to_many_full_paths,
+                one_to_many_no_index_paths,
                 false,
             );
-            self.row_number += 1;
+            if has_path {
+                self.sub_array_row_number += 1;
+            } else {
+                self.row_number += 1;
+            }
         }
     }
 
@@ -1055,9 +1101,12 @@ impl FlatFiles {
                 })?;
 
             let filepath = csv_path.join(format!("{}.csv", table_title));
-            info!("    Writing {} row(s) to {}.csv", metadata.rows, table_title);
+            info!(
+                "    Writing {} row(s) to {}.csv",
+                metadata.rows, table_title
+            );
             if TERMINATE.load(Ordering::SeqCst) {
-                return Err(Error::Terminated {})
+                return Err(Error::Terminated {});
             };
             let mut csv_writer = WriterBuilder::new().from_path(filepath.clone()).context(
                 FlattererCSVWriteError {
@@ -1160,9 +1209,12 @@ impl FlatFiles {
                 new_table_title = truncate_xlsx_title(new_table_title, &self.path_separator);
             }
             if TERMINATE.load(Ordering::SeqCst) {
-                return Err(Error::Terminated {})
+                return Err(Error::Terminated {});
             };
-            info!("    Writing {} row(s) to sheet `{}`", metadata.rows, new_table_title);
+            info!(
+                "    Writing {} row(s) to sheet `{}`",
+                metadata.rows, new_table_title
+            );
 
             let mut worksheet = workbook
                 .add_worksheet(Some(&new_table_title))
@@ -1485,22 +1537,22 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<F
     let thread = thread::spawn(move || -> Result<FlatFiles> {
         let mut count = 0;
         for value in value_receiver {
-            flat_files.process_value(value);
+            flat_files.process_value(value, vec![]);
             flat_files.create_rows()?;
             count += 1;
             if count % 500000 == 0 {
                 if TERMINATE.load(Ordering::SeqCst) {
                     log::debug!("Terminating..");
-                    return Err(Error::Terminated {})
+                    return Err(Error::Terminated {});
                 };
                 if stop_receiver.try_recv().is_ok() {
-                    return Ok(flat_files) // This is really an error but it should be handled by main thread.
+                    return Ok(flat_files); // This is really an error but it should be handled by main thread.
                 }
                 info!("Processed {} values so far.", count);
             }
         }
         if stop_receiver.try_recv().is_ok() {
-            return Ok(flat_files) // This is really an error but it should be handled by main thread.
+            return Ok(flat_files); // This is really an error but it should be handled by main thread.
         }
 
         info!("Finished processing {} value(s)", count);
@@ -1526,7 +1578,7 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<F
             return Err(Error::FlattererProcessError {message: format!("The JSON provided as input is not an array of objects: Value at array position {} is not an object: value is `{}`", num, value)});
         };
         if value_sender.send(value).is_err() {
-            break
+            break;
         };
     }
     drop(value_sender);
@@ -1541,6 +1593,148 @@ pub fn flatten_from_jl<R: Read>(input: R, mut flat_files: FlatFiles) -> Result<F
             } else {
                 Ok(result.unwrap())
             }
+        }
+        Err(err) => panic::resume_unwind(err),
+    }
+}
+
+pub fn flatten_new<R: Read>(
+    mut input: BufReader<R>,
+    mut flat_files: FlatFiles,
+    path: Vec<String>,
+    json_stream: bool,
+) -> Result<FlatFiles> {
+    let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
+    let (stop_sender, stop_receiver) = bounded(1);
+    info!("Reading JSON input file and saving output into temporary CSV files");
+
+    let output_path = flat_files.output_path.clone();
+
+    let thread = thread::spawn(move || -> Result<FlatFiles> {
+        let smart_path = path
+            .iter()
+            .map(|item| SmartString::from(item))
+            .collect_vec();
+        let mut count = 0;
+        for item in item_receiver.iter() {
+            let value: Value = serde_json::from_str(&item.json).context(SerdeReadError {})?;
+
+            if !value.is_object() {
+                return Err(Error::FlattererProcessError {
+                    message: format!(
+                        "Value at array position {} is not an object: value is `{}`",
+                        count, value
+                    ),
+                });
+            }
+            if !path.is_empty() && item.path != smart_path {
+                continue;
+            }
+            let mut initial_path = vec![];
+            if smart_path.is_empty() {
+                initial_path = item.path.clone()
+            }
+            flat_files.process_value(value, initial_path);
+            flat_files.create_rows()?;
+            count += 1;
+            if count % 500000 == 0 {
+                info!("Processed {} values so far.", count);
+                if TERMINATE.load(Ordering::SeqCst) {
+                    log::debug!("Terminating..");
+                    return Err(Error::Terminated {});
+                };
+                if stop_receiver.try_recv().is_ok() {
+                    return Ok(flat_files); // This is really an error but it should be handled by main thread.
+                }
+            }
+        }
+        if count == 0 {
+            return Err(Error::FlattererProcessError {
+                message: "The JSON provided as input is not an array of objects".to_string(),
+            });
+        }
+        if stop_receiver.try_recv().is_ok() {
+            return Ok(flat_files); // This is really an error but it should be handled by main thread.
+        }
+        if TERMINATE.load(Ordering::SeqCst) {
+            return Err(Error::Terminated {});
+        };
+        info!("Finished processing {} value(s)", count);
+
+        flat_files.write_files()?;
+        Ok(flat_files)
+    });
+
+    let mut outer: Vec<u8> = vec![];
+    let top_level_type;
+
+    {
+        let mut handler = yajlparser::ParseJson::new(&mut outer, item_sender.clone(), json_stream, 500 * 1024 * 1024);
+
+        {
+            let mut parser = Parser::new(&mut handler);
+
+            if let Err(error) = parser.parse(&mut input) {
+                log::debug!("Parse error, whilst in main parsing");
+                stop_sender.send(()).context(ChannelStopSendError {})?;
+                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                    filename: output_path.to_string_lossy(),
+                })?;
+                return Err(Error::YAJLishParseError {
+                    error: format!("Invalid JSON due to the following error: {}", error),
+                });
+            }
+            if let Err(error) = parser.finish_parse() {
+                // never seems to reach parse complete on stream data
+                if !error
+                    .to_string()
+                    .contains("Did not reach a ParseComplete status")
+                {
+                    log::debug!("Parse error, whilst in cleaning up parsing");
+                    stop_sender.send(()).context(ChannelStopSendError {})?;
+                    remove_dir_all(&output_path).context(FlattererRemoveDir {
+                        filename: output_path.to_string_lossy(),
+                    })?;
+                    return Err(Error::YAJLishParseError {
+                        error: format!("Invalid JSON due to the following error: {}", error),
+                    });
+                }
+            }
+        }
+
+        top_level_type = handler.top_level_type.clone();
+
+        if !handler.error.is_empty() {
+            remove_dir_all(&output_path).context(FlattererRemoveDir {
+                filename: output_path.to_string_lossy(),
+            })?;
+            return Err(Error::FlattererProcessError {
+                message: handler.error
+            });
+        }
+    }
+
+    if top_level_type == "object" && !json_stream {
+        let item = Item {
+            json: std::str::from_utf8(&outer)
+                .expect("utf8 should be checked by yajl")
+                .to_string(),
+            path: vec![],
+        };
+        item_sender.send(item).context(ChannelItemError {})?;
+    }
+    drop(item_sender);
+
+    match thread.join() {
+        Ok(result) => {
+            if let Err(err) = result {
+                log::debug!("Error on thread join {}", err);
+                remove_dir_all(&output_path).context(FlattererRemoveDir {
+                    filename: output_path.to_string_lossy(),
+                })?;
+                return Err(err);
+            }
+            Ok(result.unwrap())
         }
         Err(err) => panic::resume_unwind(err),
     }
@@ -1571,7 +1765,8 @@ pub fn flatten<R: Read>(
                 log::debug!("Extra data found in input, unspecified behaviour in yajlish");
                 let mut extra_detail = "";
 
-                if buf[0] == 123 { // 123 is a `{`
+                if buf[0] == 123 {
+                    // 123 is a `{`
                     extra_detail = ": It looks like you have supplied an object, either supply a correct `--path` or try the `--json-lines` option."
                 }
 
@@ -1592,25 +1787,25 @@ pub fn flatten<R: Read>(
                     ),
                 });
             }
-            flat_files.process_value(value);
+            flat_files.process_value(value, vec![]);
             flat_files.create_rows()?;
             count += 1;
             if count % 500000 == 0 {
                 info!("Processed {} values so far.", count);
                 if TERMINATE.load(Ordering::SeqCst) {
                     log::debug!("Terminating..");
-                    return Err(Error::Terminated {})
+                    return Err(Error::Terminated {});
                 };
                 if stop_receiver.try_recv().is_ok() {
-                    return Ok(flat_files) // This is really an error but it should be handled by main thread.
+                    return Ok(flat_files); // This is really an error but it should be handled by main thread.
                 }
             }
         }
         if stop_receiver.try_recv().is_ok() {
-            return Ok(flat_files) // This is really an error but it should be handled by main thread.
+            return Ok(flat_files); // This is really an error but it should be handled by main thread.
         }
         if TERMINATE.load(Ordering::SeqCst) {
-            return Err(Error::Terminated {})
+            return Err(Error::Terminated {});
         };
         info!("Finished processing {} value(s)", count);
 
@@ -1688,6 +1883,7 @@ mod tests {
         let output_dir = tmp_dir.path().join("output");
         let output_path = output_dir.to_string_lossy().into_owned();
         let mut flat_files = FlatFiles::new_with_defaults(output_path.clone()).unwrap();
+        let mut path = vec![];
 
         if let Some(inline) = options["inline"].as_bool() {
             flat_files.inline_one_to_one = inline
@@ -1702,22 +1898,24 @@ mod tests {
                 .use_tables_csv(tables_csv.to_string(), tables_only)
                 .unwrap();
         }
-
+        if let Some(path_values) = options["path"].as_array() {
+            path = path_values.iter().map(|item| {item.as_str().unwrap().to_string()}).collect();
+        }
 
         let result;
+        
+        let stream = if file.ends_with(".json") {false} else {true};
 
-        if file.ends_with(".json") {
-            result = flatten(
-                BufReader::new(File::open(file).unwrap()),
-                flat_files,
-                vec![],
-            );
-        } else {
-            result = flatten_from_jl(BufReader::new(File::open(file).unwrap()), flat_files);
-        }
+        result = flatten_new(
+            BufReader::new(File::open(file).unwrap()),
+            flat_files,
+            path,
+            stream
+        );
 
         if let Err(error) = result {
             if let Some(error_text) = options["error_text"].as_str() {
+                println!("{}", error.to_string());
                 assert!(error.to_string().contains(error_text))
             } else {
                 panic!(
@@ -1755,7 +1953,7 @@ mod tests {
         for extention in ["json", "jl"] {
             test_output(
                 &format!("fixtures/basic.{}", extention),
-                vec!["csv/main.csv", "csv/platforms.csv"],
+                vec!["csv/main.csv", "csv/platforms.csv", "csv/developer.csv"],
                 json!({}),
             )
         }
@@ -1770,6 +1968,61 @@ mod tests {
                 json!({"inline": true}),
             );
         }
+    }
+
+    #[test]
+    fn full_test_in_object() {
+        test_output(
+            "fixtures/basic_in_object.json",
+            vec![
+                "csv/main.csv",
+                "csv/games.csv",
+                "csv/games_platforms.csv",
+                "csv/games_developer.csv",
+            ],
+            json!({}),
+        )
+    }
+
+    #[test]
+    fn full_test_in_object_with_extra() {
+        test_output(
+            "fixtures/basic_in_object_with_extra.json",
+            vec![
+                "csv/main.csv",
+                "csv/games.csv",
+                "csv/games_platforms.csv",
+                "csv/games_developer.csv",
+            ],
+            json!({}),
+        )
+    }
+
+    #[test]
+    fn full_test_in_object_with_multiple() {
+        test_output(
+            "fixtures/basic_with_multiple.json",
+            vec![
+                "csv/main.csv",
+                "csv/games.csv",
+                "csv/games_platforms.csv",
+                "csv/moreGames.csv",
+                "csv/moreGames_platforms.csv",
+            ],
+            json!({}),
+        )
+    }
+
+    #[test]
+    fn full_test_select() {
+        test_output(
+            "fixtures/basic_with_multiple.json",
+            vec![
+                "csv/main.csv",
+                "csv/platforms.csv",
+            ],
+            json!({"path": ["moreGames"]}),
+        )
     }
 
     #[test]
@@ -1827,13 +2080,16 @@ mod tests {
 
     #[test]
     fn main_array_literal() {
-        for extention in ["json", "jl"] {
-            test_output(
-                &format!("fixtures/main_array_literal.{}", extention),
-                vec![],
-                json!({"error_text": "The JSON provided as input is not an array of objects"}),
-            );
-        }
+        test_output(
+            "fixtures/main_array_literal.json",
+            vec![],
+            json!({"error_text": "The JSON provided as input is not an array of objects"}),
+        );
+        test_output(
+            "fixtures/main_array_literal.jl",
+            vec![],
+            json!({"error_text": "Value at array position 0 is not an object: value is `\"1\"`"}),
+        );
     }
 
     #[test]
@@ -1841,7 +2097,7 @@ mod tests {
         test_output(
             "fixtures/array_empty.json",
             vec![],
-            json!({"error_text": "The JSON provided as input contains an empty array"}),
+            json!({"error_text": "The JSON provided as input is not an array of objects"}),
         );
     }
 
@@ -1850,7 +2106,7 @@ mod tests {
         test_output(
             "fixtures/array_literal.json",
             vec![],
-            json!({"error_text": "Value at array position 0 is not an object: value is `1`"}),
+            json!({"error_text": "The JSON provided as input is not an array of objects"}),
         );
     }
 
@@ -1868,7 +2124,7 @@ mod tests {
         test_output(
             "fixtures/array_object.json",
             vec![],
-            json!({"error_text": "The JSON provided as input is not an array of objects: It looks like you have supplied an object, either supply a correct `--path` or try the `--json-lines` option."}),
+            json!({"error_text": "The JSON provided as input is not an array of objects"}),
         );
     }
 
@@ -1883,11 +2139,7 @@ mod tests {
 
     #[test]
     fn test_empty_array() {
-        test_output(
-            "fixtures/testempty.json",
-            vec![],
-            json!({}),
-        );
+        test_output("fixtures/testempty.json", vec![], json!({}));
     }
 
     #[test]
@@ -1917,7 +2169,7 @@ mod tests {
         )
         .unwrap();
 
-        flat_files.process_value(myjson.clone());
+        flat_files.process_value(myjson.clone(), vec![]);
 
         insta::assert_yaml_snapshot!(&flat_files.table_rows);
 
@@ -1931,7 +2183,7 @@ mod tests {
         insta::assert_yaml_snapshot!(&flat_files.table_metadata,
                                      {".*.output_path" => "[path]"});
 
-        flat_files.process_value(myjson);
+        flat_files.process_value(myjson, vec![]);
         flat_files.create_rows().unwrap();
 
         assert_eq!(
@@ -1971,8 +2223,8 @@ mod tests {
         )
         .unwrap();
 
-        flat_files.process_value(json1);
-        flat_files.process_value(json2);
+        flat_files.process_value(json1, vec![]);
+        flat_files.process_value(json2, vec![]);
 
         flat_files.create_rows().unwrap();
         flat_files.mark_ignore();
@@ -2008,8 +2260,8 @@ mod tests {
         )
         .unwrap();
 
-        flat_files.process_value(json1);
-        flat_files.process_value(json2);
+        flat_files.process_value(json1, vec![]);
+        flat_files.process_value(json2, vec![]);
 
         flat_files.create_rows().unwrap();
         flat_files.mark_ignore();
