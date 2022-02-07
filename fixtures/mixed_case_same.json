@@ -9,7 +9,7 @@
     ],
     "rating": {
       "code": "E",
-      "name": "Everyone"
+      "Code": "Everyone"
     },
     "releaseDate": "2015-01-01",
     "title": "A Game"
@@ -25,7 +25,7 @@
     ],
     "rating": {
       "code": "E",
-      "name": "Everyone"
+      "Code": "Everyone"
     },
     "releaseDate": "2016-01-01",
     "title": "B Game"

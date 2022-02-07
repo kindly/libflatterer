@@ -19,6 +19,7 @@
 //!     true, // output directory
 //!     true, // make csv
 //!     true, // make xlsx
+//!     true, // make sqlite
 //!     "main".to_string(), // main table name
 //!     vec![], // list of json paths to omit object as if it was array
 //!     false, // inline one to one tables if possible
@@ -40,6 +41,7 @@ mod schema_analysis;
 mod yajlparser;
 
 use indexmap::IndexMap as HashMap;
+use std::collections::HashSet;
 use std::convert::TryInto;
 use std::fmt;
 use std::fs::{create_dir_all, remove_dir_all, File};
@@ -50,9 +52,11 @@ use std::{panic, thread};
 
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
+pub use guess_array::guess_array;
 use itertools::Itertools;
 use log::{info, warn};
 use regex::Regex;
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
 use smallvec::{smallvec, SmallVec};
@@ -62,10 +66,15 @@ use xlsxwriter::Workbook;
 use yajlish::Parser;
 use yajlparser::Item;
 
-pub use guess_array::guess_array;
-
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
+}
+lazy_static::lazy_static! {
+    #[allow(clippy::invalid_regex)]
+    pub static ref INVALID_REGEX: regex::Regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
+        .octal(true)
+        .build()
+        .unwrap();
 }
 
 #[non_exhaustive]
@@ -143,6 +152,8 @@ pub enum Error {
     ChannelBufSendError { source: SendError<(Vec<u8>, bool)> },
     #[snafu(display(""))]
     ChannelStopSendError { source: SendError<()> },
+    #[snafu(display("{}", source))]
+    RusqliteError { source: rusqlite::Error },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -174,6 +185,7 @@ pub struct FlatFiles {
     output_path: PathBuf,
     csv: bool,
     pub xlsx: bool,
+    pub sqlite: bool,
     pub main_table_name: String,
     emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]>,
     row_number: usize,
@@ -208,6 +220,7 @@ pub struct TableMetadata {
     field_titles: Vec<String>,
     table_name_with_separator: String,
     output_path: PathBuf,
+    field_titles_lc: Vec<String>,
 }
 
 impl TableMetadata {
@@ -239,6 +252,7 @@ impl TableMetadata {
             field_titles: vec![],
             table_name_with_separator,
             output_path,
+            field_titles_lc: vec![],
         }
     }
 }
@@ -293,6 +307,7 @@ impl FlatFiles {
             true,
             false,
             false,
+            false,
             "main".to_string(),
             vec![],
             false,
@@ -307,6 +322,7 @@ impl FlatFiles {
         output_dir: String,
         csv: bool,
         xlsx: bool,
+        sqlite: bool,
         force: bool,
         main_table_name: String,
         emit_obj: Vec<Vec<String>>,
@@ -340,6 +356,7 @@ impl FlatFiles {
             output_path,
             csv,
             xlsx,
+            sqlite,
             main_table_name: [table_prefix.clone(), main_table_name].concat(),
             emit_obj: smallvec_emit_obj,
             row_number: 0,
@@ -661,7 +678,7 @@ impl FlatFiles {
     pub fn create_rows(&mut self) -> Result<()> {
         for (table, rows) in self.table_rows.iter_mut() {
             if !self.tmp_csvs.contains_key(table) {
-                if self.csv || self.xlsx {
+                if self.csv || self.xlsx || self.sqlite {
                     let output_path = self.output_path.join(format!("tmp/{}.csv", table));
                     self.tmp_csvs.insert(
                         table.clone(),
@@ -886,6 +903,21 @@ impl FlatFiles {
         }
     }
 
+    pub fn make_lower_case_titles(&mut self) {
+        for metadata in self.table_metadata.values_mut() {
+            let mut existing_fields = HashSet::new();
+            for field in metadata.field_titles.iter() {
+                let mut lowered = field.to_lowercase().trim().to_owned();
+                lowered = INVALID_REGEX.replace_all(&lowered, "").to_string();
+                while existing_fields.contains(&lowered) {
+                    lowered.push('_')
+                }
+                metadata.field_titles_lc.push(lowered.clone());
+                existing_fields.insert(lowered);
+            }
+        }
+    }
+
     pub fn determine_order(&mut self) {
         for metadata in self.table_metadata.values_mut() {
             let mut fields_to_order: Vec<(usize, usize)> = vec![];
@@ -917,6 +949,7 @@ impl FlatFiles {
         info!("Analyzing input data");
         self.mark_ignore();
         self.determine_order();
+        self.make_lower_case_titles();
 
         //remove tables that should not be there from table order.
         self.table_order
@@ -938,6 +971,10 @@ impl FlatFiles {
 
         if self.xlsx {
             self.write_xlsx()?;
+        };
+
+        if self.sqlite {
+            self.write_sqlite_db()?;
         };
 
         let tmp_path = self.output_path.join("tmp");
@@ -1190,12 +1227,6 @@ impl FlatFiles {
                 });
             }
         }
-        #[allow(clippy::invalid_regex)]
-        let invalid_regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
-            .octal(true)
-            .build()
-            .unwrap();
-        //let invalid_regex = regex::Regex::new(r"\u0000").unwrap();
 
         for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap(); //key known
@@ -1237,9 +1268,9 @@ impl FlatFiles {
             for order in table_order {
                 if !metadata.ignore_fields[order] {
                     let mut title = metadata.field_titles[order].clone();
-                    if invalid_regex.is_match(&title) {
+                    if INVALID_REGEX.is_match(&title) {
                         warn!("Characters found in input JSON that are not allowed in XLSX file or could cause issues. Striping these, so output is possible.");
-                        title = invalid_regex.replace_all(&title, "").to_string();
+                        title = INVALID_REGEX.replace_all(&title, "").to_string();
                     }
 
                     worksheet
@@ -1267,9 +1298,9 @@ impl FlatFiles {
 
                     let mut cell = this_row[order].to_string();
 
-                    if invalid_regex.is_match(&cell) {
+                    if INVALID_REGEX.is_match(&cell) {
                         warn!("Character found in JSON that is not allowed in XLSX file. Removing these so output is possible");
-                        cell = invalid_regex.replace_all(&cell, "").to_string();
+                        cell = INVALID_REGEX.replace_all(&cell, "").to_string();
                     }
 
                     if metadata.field_type[order] == "number" {
@@ -1348,7 +1379,7 @@ impl FlatFiles {
                 }
                 fields.push(format!(
                     "    \"{}\" {}",
-                    metadata.field_titles[order].to_lowercase(),
+                    metadata.field_titles_lc[order],
                     postgresql::to_postgresql_type(&metadata.field_type[order])
                 ));
             }
@@ -1418,7 +1449,7 @@ impl FlatFiles {
                 }
                 fields.push(format!(
                     "    \"{}\" {}",
-                    metadata.field_titles[order].to_lowercase(),
+                    metadata.field_titles_lc[order],
                     postgresql::to_postgresql_type(&metadata.field_type[order])
                 ));
             }
@@ -1438,6 +1469,107 @@ impl FlatFiles {
             .context(FlattererFileWriteSnafu {
                 filename: "sqlite_load.sql",
             })?;
+        }
+
+        Ok(())
+    }
+
+    pub fn write_sqlite_db(&mut self) -> Result<()> {
+        let sqlite_dir_path = self.output_path.join("sqlite.db");
+        let tmp_path = self.output_path.join("tmp");
+
+        let mut conn = Connection::open(sqlite_dir_path).context(RusqliteSnafu {})?;
+
+        conn.execute_batch(
+            "PRAGMA journal_mode = OFF;
+             PRAGMA synchronous = 0;
+             PRAGMA cache_size = 1000000;
+             PRAGMA locking_mode = EXCLUSIVE;
+             PRAGMA temp_store = MEMORY;",
+        )
+        .context(RusqliteSnafu {})?;
+
+        for (table_name, table_title) in self.table_order.iter() {
+            let mut output_row = Vec::new();
+            let metadata = self.table_metadata.get(table_name).unwrap();
+            if metadata.rows == 0 || metadata.ignore {
+                continue;
+            }
+            let table_order = metadata.order.clone();
+            let mut create_table_sql = String::new();
+            create_table_sql.push_str(&format!(
+                "CREATE TABLE \"{ }\"(",
+                table_title.to_lowercase()
+            ));
+
+            let mut fields = Vec::new();
+            for order in table_order {
+                if metadata.ignore_fields[order] {
+                    continue;
+                }
+                fields.push(format!(
+                    "    \"{}\" {}",
+                    metadata.field_titles_lc[order],
+                    postgresql::to_postgresql_type(&metadata.field_type[order])
+                ));
+            }
+            create_table_sql.push_str(&format!("{});\n\n", fields.join(",\n")));
+            conn.execute(&create_table_sql, [])
+                .context(RusqliteSnafu {})?;
+
+            let tx = conn.transaction().context(RusqliteSnafu {})?;
+            let mut question_marks =
+                "?,".repeat(metadata.ignore_fields.iter().filter(|i| !*i).count());
+            question_marks.pop();
+
+            {
+                let mut statement = tx
+                    .prepare_cached(&format!(
+                        "INSERT INTO {table_title} VALUES ({question_marks})"
+                    ))
+                    .context(RusqliteSnafu {})?;
+
+                let reader_filepath = tmp_path.join(format!("{}.csv", table_name));
+                let csv_reader = ReaderBuilder::new()
+                    .has_headers(false)
+                    .flexible(true)
+                    .from_path(&reader_filepath)
+                    .context(FlattererCSVReadSnafu {
+                        filepath: reader_filepath.to_string_lossy(),
+                    })?;
+
+                if TERMINATE.load(Ordering::SeqCst) {
+                    return Err(Error::Terminated {});
+                };
+
+                for (num, row) in csv_reader.into_deserialize().enumerate() {
+                    if self.preview != 0 && num == self.preview {
+                        break;
+                    }
+                    let this_row: Vec<String> = row.context(FlattererCSVReadSnafu {
+                        filepath: reader_filepath.to_string_lossy(),
+                    })?;
+                    let table_order = metadata.order.clone();
+
+                    for order in table_order {
+                        if metadata.ignore_fields[order] {
+                            continue;
+                        }
+                        if order >= this_row.len() {
+                            output_row.push("".to_string());
+                        } else {
+                            output_row.push(this_row[order].clone());
+                        }
+                    }
+
+                    statement
+                        .execute(rusqlite::params_from_iter(output_row.iter()))
+                        .context(RusqliteSnafu {})?;
+
+                    output_row.clear();
+                }
+            }
+            tx.commit().context(RusqliteSnafu {})?;
         }
 
         Ok(())
@@ -1579,6 +1711,7 @@ pub fn flatten<R: Read>(
                 }
             }
         }
+
         if count == 0 {
             return Err(Error::FlattererProcessError {
                 message: "The JSON provided as input is not an array of objects".to_string(),
@@ -1692,9 +1825,10 @@ mod tests {
         if let Some(inline) = options["inline"].as_bool() {
             flat_files.inline_one_to_one = inline
         }
-        if let Some(xlsx) = options["xlsx"].as_bool() {
-            flat_files.xlsx = xlsx
-        }
+
+        flat_files.xlsx = true;
+        flat_files.sqlite = true;
+
         if let Some(tables_csv) = options["tables_csv"].as_str() {
             let tables_only = options["tables_only"].as_bool().unwrap();
 
@@ -1816,6 +1950,15 @@ mod tests {
                 "csv/moreGames.csv",
                 "csv/moreGames_platforms.csv",
             ],
+            json!({}),
+        )
+    }
+
+    #[test]
+    fn full_test_mixed_case() {
+        test_output(
+            "fixtures/mixed_case_same.json",
+            vec!["postgresql/postgresql_schema.sql"],
             json!({}),
         )
     }
@@ -1963,6 +2106,7 @@ mod tests {
             true,
             true,
             true,
+            true,
             "main".to_string(),
             vec![],
             false,
@@ -2017,6 +2161,7 @@ mod tests {
             true,
             true,
             true,
+            true,
             "main".to_string(),
             vec![],
             true,
@@ -2051,6 +2196,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
         let mut flat_files = FlatFiles::new(
             tmp_dir.path().join("output").to_string_lossy().into_owned(),
+            true,
             true,
             true,
             true,

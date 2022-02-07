@@ -34,6 +34,7 @@ main:
     - _link
   table_name_with_separator: ""
   output_path: "[path]"
+  field_titles_lc: []
 e:
   field_type:
     - number
@@ -65,4 +66,5 @@ e:
     - _link_main
   table_name_with_separator: e_
   output_path: "[path]"
+  field_titles_lc: []
 
