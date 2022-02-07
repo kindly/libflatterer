@@ -16,6 +16,12 @@ main:
     - d_da
     - d_db
     - _link
+  fields_set:
+    - a
+    - c
+    - d_da
+    - d_db
+    - _link
   field_counts:
     - 1
     - 1
@@ -47,6 +53,11 @@ e:
     - text
     - text
   fields:
+    - ea
+    - eb
+    - _link
+    - _link_main
+  fields_set:
     - ea
     - eb
     - _link

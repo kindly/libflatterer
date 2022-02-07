@@ -41,7 +41,7 @@ mod schema_analysis;
 mod yajlparser;
 
 use indexmap::IndexMap as HashMap;
-use std::collections::HashSet;
+use indexmap::IndexSet as Set;
 use std::convert::TryInto;
 use std::fmt;
 use std::fs::{create_dir_all, remove_dir_all, File};
@@ -212,6 +212,7 @@ pub struct FlatFiles {
 pub struct TableMetadata {
     field_type: Vec<String>,
     fields: Vec<String>,
+    fields_set: Set<String>,
     field_counts: Vec<u32>,
     rows: u32,
     ignore: bool,
@@ -243,6 +244,7 @@ impl TableMetadata {
 
         TableMetadata {
             fields: vec![],
+            fields_set: Set::new(),
             field_counts: vec![],
             field_type: vec![],
             rows: 0,
@@ -732,8 +734,10 @@ impl FlatFiles {
                     }
                 }
                 for (key, value) in row {
-                    if !table_metadata.fields.contains(key) && !self.only_fields {
+
+                    if !table_metadata.fields_set.contains(key) && !self.only_fields {
                         table_metadata.fields.push(key.clone());
+                        table_metadata.fields_set.insert(key.clone());
                         table_metadata.field_counts.push(1);
                         table_metadata.field_type.push("".to_string());
                         table_metadata.ignore_fields.push(false);
@@ -855,6 +859,7 @@ impl FlatFiles {
             }
             let table_metadata = self.table_metadata.get_mut(&row.table_name).unwrap(); //key known
             table_metadata.fields.push(row.field_name.clone());
+            table_metadata.fields_set.insert(row.field_name.clone());
             table_metadata.field_counts.push(0);
             table_metadata
                 .field_type
@@ -905,7 +910,7 @@ impl FlatFiles {
 
     pub fn make_lower_case_titles(&mut self) {
         for metadata in self.table_metadata.values_mut() {
-            let mut existing_fields = HashSet::new();
+            let mut existing_fields = Set::new();
             for field in metadata.field_titles.iter() {
                 let mut lowered = field.to_lowercase().trim().to_owned();
                 lowered = INVALID_REGEX.replace_all(&lowered, "").to_string();

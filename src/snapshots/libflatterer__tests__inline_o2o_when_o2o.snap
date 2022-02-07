@@ -14,6 +14,11 @@ main:
     - e_ea
     - e_eb
     - _link
+  fields_set:
+    - id
+    - e_ea
+    - e_eb
+    - _link
   field_counts:
     - 2
     - 2
@@ -42,6 +47,11 @@ e:
     - text
     - text
   fields:
+    - ea
+    - eb
+    - _link
+    - _link_main
+  fields_set:
     - ea
     - eb
     - _link
