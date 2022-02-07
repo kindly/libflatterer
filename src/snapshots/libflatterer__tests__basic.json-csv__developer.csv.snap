@@ -1,0 +1,10 @@
+---
+source: src/lib.rs
+assertion_line: 1898
+expression: output
+
+---
+- "_link,_link_main,name"
+- "0.developer.0,0,deva"
+- "1.developer.0,1,devb"
+

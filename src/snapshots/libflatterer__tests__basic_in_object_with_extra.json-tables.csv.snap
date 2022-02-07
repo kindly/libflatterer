@@ -1,0 +1,12 @@
+---
+source: src/lib.rs
+assertion_line: 1898
+expression: output
+
+---
+- "table_name,table_title"
+- "games,games"
+- "games_developer,games_developer"
+- "games_platforms,games_platforms"
+- "main,main"
+

@@ -32,4 +32,4 @@ rusqlite = {version = "0.26.3", features = ["bundled"] }
 
 
 [dev-dependencies]
-insta = {version = "1.8.0", features = ["redactions"]}
+insta = {version = "1.12.0", features = ["redactions"]}

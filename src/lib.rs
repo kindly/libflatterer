@@ -1822,13 +1822,15 @@ mod tests {
 
     fn test_output(file: &str, output: Vec<&str>, options: Value) {
         let tmp_dir = TempDir::new().unwrap();
+        let mut name = file.split("/").last().unwrap().to_string();
         let output_dir = tmp_dir.path().join("output");
         let output_path = output_dir.to_string_lossy().into_owned();
         let mut flat_files = FlatFiles::new_with_defaults(output_path.clone()).unwrap();
         let mut path = vec![];
 
         if let Some(inline) = options["inline"].as_bool() {
-            flat_files.inline_one_to_one = inline
+            flat_files.inline_one_to_one = inline;
+            name.push_str("-inline")
         }
 
         flat_files.xlsx = true;
@@ -1836,6 +1838,10 @@ mod tests {
 
         if let Some(tables_csv) = options["tables_csv"].as_str() {
             let tables_only = options["tables_only"].as_bool().unwrap();
+            name.push_str("-tablescsv");
+            if tables_only {
+                name.push_str("-tablesonly")
+            }
 
             flat_files
                 .use_tables_csv(tables_csv.to_string(), tables_only)
@@ -1846,6 +1852,8 @@ mod tests {
                 .iter()
                 .map(|item| item.as_str().unwrap().to_string())
                 .collect();
+
+            name.push_str("-withpath")
         }
 
         let result;
@@ -1878,18 +1886,19 @@ mod tests {
         test_files.extend(output);
 
         for test_file in test_files {
+            let new_name = format!("{}-{}", name, test_file);
             if test_file.ends_with(".json") {
                 let value: Value = serde_json::from_reader(
                     File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
                 )
                 .unwrap();
-                insta::assert_yaml_snapshot!(&value);
+                insta::assert_yaml_snapshot!(new_name, &value);
             } else {
                 let file_as_string =
                     read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
 
                 let output: Vec<_> = file_as_string.lines().collect();
-                insta::assert_yaml_snapshot!(output);
+                insta::assert_yaml_snapshot!(new_name, output);
             }
         }
     }

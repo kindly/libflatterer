@@ -1,0 +1,11 @@
+---
+source: src/lib.rs
+assertion_line: 1898
+expression: output
+
+---
+- "table_name,table_title"
+- "main,main"
+- "developer,developer"
+- "platforms,platforms"
+
