@@ -206,6 +206,7 @@ pub struct FlatFiles {
     pub preview: usize,
     only_tables: bool,
     table_order: HashMap<String, String>,
+    pub sqlite_path: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -379,6 +380,7 @@ impl FlatFiles {
             preview: 0,
             only_tables: false,
             table_order: HashMap::new(),
+            sqlite_path: "".to_string(),
         };
 
         flat_files.set_csv(csv)?;
@@ -1480,7 +1482,10 @@ impl FlatFiles {
     }
 
     pub fn write_sqlite_db(&mut self) -> Result<()> {
-        let sqlite_dir_path = self.output_path.join("sqlite.db");
+        let mut sqlite_dir_path = self.output_path.join("sqlite.db");
+        if !self.sqlite_path.is_empty() {
+            sqlite_dir_path = PathBuf::from(&self.sqlite_path);
+        }
         let tmp_path = self.output_path.join("tmp");
 
         let mut conn = Connection::open(sqlite_dir_path).context(RusqliteSnafu {})?;
