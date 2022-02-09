@@ -1482,6 +1482,7 @@ impl FlatFiles {
     }
 
     pub fn write_sqlite_db(&mut self) -> Result<()> {
+        info!("Writing SQLite file");
         let mut sqlite_dir_path = self.output_path.join("sqlite.db");
         if !self.sqlite_path.is_empty() {
             sqlite_dir_path = PathBuf::from(&self.sqlite_path);
@@ -1505,6 +1506,10 @@ impl FlatFiles {
             if metadata.rows == 0 || metadata.ignore {
                 continue;
             }
+            info!(
+                "    Writing {} row(s) to table `{}`",
+                metadata.rows, table_title
+            );
             let table_order = metadata.order.clone();
             let mut create_table_sql = String::new();
             create_table_sql.push_str(&format!(
@@ -1524,6 +1529,7 @@ impl FlatFiles {
                 ));
             }
             create_table_sql.push_str(&format!("{});\n\n", fields.join(",\n")));
+            log::debug!("create table sql: {create_table_sql}");
             conn.execute(&create_table_sql, [])
                 .context(RusqliteSnafu {})?;
 
@@ -1663,7 +1669,8 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     }
     let mut new_parts: Vec<String> = vec![];
     for part in parts[..parts.len() - 1].iter() {
-        let new_part = part[..len_of_part].to_string();
+        let end_new_part = std::cmp::min(len_of_part, part.len());
+        let new_part = part[..end_new_part].to_string();
         new_parts.push(new_part);
     }
     new_parts.push(last_part);
@@ -2257,6 +2264,8 @@ mod tests {
              "contrac_impleme_transac_payer"),
             ("contracts_implementation_transactions_payee",
              "contrac_impleme_transac_payee"),
+            ("grants_recipientOrganization_location",
+             "grants_recipientO_location")
         ];
 
         for case in cases {
