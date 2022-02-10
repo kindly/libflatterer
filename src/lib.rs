@@ -68,13 +68,12 @@ use yajlparser::Item;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
-}
-lazy_static::lazy_static! {
     #[allow(clippy::invalid_regex)]
-    pub static ref INVALID_REGEX: regex::Regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
+    static ref INVALID_REGEX: regex::Regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
         .octal(true)
         .build()
         .unwrap();
+    static ref DATE_REGEX: regex::Regex = Regex::new(r"^([1-3]\d{3})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)((-(\d{2}):(\d{2})|Z)?))?$").unwrap();
 }
 
 #[non_exhaustive]
@@ -191,7 +190,6 @@ pub struct FlatFiles {
     row_number: usize,
     sub_array_row_number: usize,
     current_path: Vec<SmartString>,
-    date_regexp: Regex,
     table_rows: HashMap<String, Vec<Map<String, Value>>>,
     tmp_csvs: HashMap<String, TmpCSVWriter>,
     table_metadata: HashMap<String, TableMetadata>,
@@ -365,7 +363,6 @@ impl FlatFiles {
             row_number: 0,
             sub_array_row_number: 0,
             current_path: vec![],
-            date_regexp: Regex::new(r"^([1-3]\d{3})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)((-(\d{2}):(\d{2})|Z)?))?$").unwrap(),
             table_rows: HashMap::new(),
             tmp_csvs: HashMap::new(),
             table_metadata: HashMap::new(),
@@ -728,8 +725,7 @@ impl FlatFiles {
                         output_row.push(value_convert(
                             value.take(),
                             &mut table_metadata.field_type,
-                            num,
-                            &self.date_regexp,
+                            num
                         ));
                     } else {
                         output_row.push("".to_string());
@@ -755,8 +751,7 @@ impl FlatFiles {
                         output_row.push(value_convert(
                             value.take(),
                             &mut table_metadata.field_type,
-                            table_metadata.fields.len() - 1,
-                            &self.date_regexp,
+                            table_metadata.fields.len() - 1
                         ));
                     }
                 }
@@ -952,7 +947,19 @@ impl FlatFiles {
         }
     }
 
+    pub fn flush_tmp_files(&mut self) -> Result<()> {
+        for (file, tmp_csv) in self.tmp_csvs.iter_mut() {
+            if let TmpCSVWriter::Disk(tmp_csv) = tmp_csv {
+                tmp_csv.flush().context(FlattererFileWriteSnafu {
+                    filename: file.clone(),
+                })?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn write_files(&mut self) -> Result<()> {
+        self.flush_tmp_files()?;
         info!("Analyzing input data");
         self.mark_ignore();
         self.determine_order();
@@ -962,13 +969,6 @@ impl FlatFiles {
         self.table_order
             .retain(|key, _| self.table_metadata.contains_key(key));
 
-        for (file, tmp_csv) in self.tmp_csvs.iter_mut() {
-            if let TmpCSVWriter::Disk(tmp_csv) = tmp_csv {
-                tmp_csv.flush().context(FlattererFileWriteSnafu {
-                    filename: file.clone(),
-                })?;
-            }
-        }
 
         if self.csv {
             self.write_csvs()?;
@@ -1595,8 +1595,7 @@ impl FlatFiles {
 fn value_convert(
     value: Value,
     field_type: &mut Vec<String>,
-    num: usize,
-    date_re: &Regex,
+    num: usize
 ) -> String {
     //let value_type = output_fields.get("type");
     let value_type = &field_type[num];
@@ -1604,7 +1603,7 @@ fn value_convert(
     match value {
         Value::String(val) => {
             if value_type != "text" {
-                if date_re.is_match(&val) {
+                if DATE_REGEX.is_match(&val) {
                     field_type[num] = "date".to_string();
                 } else {
                     field_type[num] = "text".to_string();
@@ -1679,10 +1678,31 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
 }
 
 pub fn flatten<R: Read>(
+    input: BufReader<R>,
+    flat_files: FlatFiles,
+    path: Vec<String>,
+    json_stream: bool,
+) -> Result<FlatFiles> {
+    flatten_all_options(input, flat_files, path, json_stream, false)
+}
+
+
+pub fn flatten_to_tmp<R: Read>(
+    input: BufReader<R>,
+    flat_files: FlatFiles,
+    path: Vec<String>,
+    json_stream: bool,
+) -> Result<FlatFiles> {
+    flatten_all_options(input, flat_files, path, json_stream, false)
+}
+
+
+fn flatten_all_options<R: Read>(
     mut input: BufReader<R>,
     mut flat_files: FlatFiles,
     path: Vec<String>,
     json_stream: bool,
+    tmp_only: bool,
 ) -> Result<FlatFiles> {
     let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
     let (stop_sender, stop_receiver) = bounded(1);
@@ -1742,7 +1762,14 @@ pub fn flatten<R: Read>(
         };
         info!("Finished processing {} value(s)", count);
 
-        flat_files.write_files()?;
+        if tmp_only {
+            flat_files.flush_tmp_files();
+            flat_files.write_fields_csv();
+            flat_files.write_tables_csv();
+        } else {
+            flat_files.write_files()?;
+        }
+
         Ok(flat_files)
     });
 
@@ -1825,6 +1852,7 @@ pub fn flatten<R: Read>(
         Err(err) => panic::resume_unwind(err),
     }
 }
+
 
 #[cfg(test)]
 mod tests {
