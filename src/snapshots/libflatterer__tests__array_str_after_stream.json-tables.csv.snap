@@ -1,0 +1,10 @@
+---
+source: src/lib.rs
+assertion_line: 1913
+expression: output
+
+---
+- "table_name,table_title"
+- "moo,moo"
+- "main,main"
+

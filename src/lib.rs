@@ -2116,6 +2116,16 @@ mod tests {
     }
 
     #[test]
+    fn test_array_str_after_stream() {
+        test_output(
+            "fixtures/array_str_after_stream.json",
+            vec![],
+            json!({}),
+        );
+    }
+
+
+    #[test]
     fn check_nesting() {
         let myjson = json!({
             "a": "a",

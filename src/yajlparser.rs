@@ -62,7 +62,8 @@ impl<W: std::io::Write> ParseJson<W> {
     fn push_array_comma(&mut self, _ctx: &Context) {
         if _ctx.parser_status() == yajlish::ParserStatus::ArrayNeedVal
             && (self.stream_start_open_braces != _ctx.num_open_braces()
-                || self.stream_start_open_brackets != _ctx.num_open_brackets())
+                || self.stream_start_open_brackets != _ctx.num_open_brackets()
+                || !self.in_stream)
         {
             self.push(",");
         }
