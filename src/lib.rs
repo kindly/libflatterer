@@ -985,9 +985,10 @@ impl FlatFiles {
         };
 
         let tmp_path = self.output_path.join("tmp");
-        remove_dir_all(&tmp_path).context(FlattererRemoveDirSnafu {
-            filename: tmp_path.to_string_lossy(),
-        })?;
+
+        if remove_dir_all(&tmp_path).is_err() {
+            log::warn!("Temp files can not be deleted, continuing anyway");
+        }
         info!("Writing metadata files");
 
         self.write_data_package()?;
@@ -1898,6 +1899,9 @@ mod tests {
             assert!(!output_dir.exists());
             return;
         }
+        let mut output_tmp_dir = output_dir.clone();
+        output_tmp_dir.push("tmp");
+        assert!(!output_tmp_dir.exists());
 
         let mut test_files = vec!["data_package.json", "fields.csv", "tables.csv"];
 
@@ -2281,7 +2285,9 @@ mod tests {
             ("contracts_implementation_transactions_payee",
              "contrac_impleme_transac_payee"),
             ("grants_recipientOrganization_location",
-             "grants_recipientO_location")
+             "grants_recipientO_location"),
+            ("releases_tender_items_attributes",
+             "releas_tender_items_attributes")
         ];
 
         for case in cases {
