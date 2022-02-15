@@ -99,7 +99,7 @@ pub enum Error {
         rows,
         sheet
     ))]
-    XLSXTooManyRows { rows: u32, sheet: String },
+    XLSXTooManyRows { rows: usize, sheet: String },
     #[snafu(display(
         "Output XLSX will have too may columns {} in sheet `{}`, maximum allowed 65536",
         columns,
@@ -215,7 +215,7 @@ pub struct TableMetadata {
     fields: Vec<String>,
     fields_set: Set<String>,
     field_counts: Vec<u32>,
-    rows: u32,
+    rows: usize,
     ignore: bool,
     ignore_fields: Vec<bool>,
     order: Vec<usize>,
@@ -1146,9 +1146,10 @@ impl FlatFiles {
                 })?;
 
             let filepath = csv_path.join(format!("{}.csv", table_title));
+            let row_count = if self.preview == 0 {metadata.rows} else {std::cmp::min(self.preview, metadata.rows)};
             info!(
                 "    Writing {} row(s) to {}.csv",
-                metadata.rows, table_title
+                row_count, table_title
             );
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
@@ -1250,9 +1251,10 @@ impl FlatFiles {
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
             };
+            let row_count = if self.preview == 0 {metadata.rows} else {std::cmp::min(self.preview, metadata.rows)};
             info!(
                 "    Writing {} row(s) to sheet `{}`",
-                metadata.rows, new_table_title
+                row_count, new_table_title
             );
 
             let mut worksheet = workbook
@@ -1288,6 +1290,9 @@ impl FlatFiles {
             }
 
             for (row_num, row) in csv_reader.into_records().enumerate() {
+                if self.preview != 0 && row_num == self.preview {
+                    break;
+                }
                 col_index = 0;
                 let this_row = row.context(FlattererCSVReadSnafu {
                     filepath: filepath.to_string_lossy(),
@@ -1506,9 +1511,10 @@ impl FlatFiles {
             if metadata.rows == 0 || metadata.ignore {
                 continue;
             }
+            let row_count = if self.preview == 0 {metadata.rows} else {std::cmp::min(self.preview, metadata.rows)};
             info!(
                 "    Writing {} row(s) to table `{}`",
-                metadata.rows, table_title
+                row_count, table_title
             );
             let table_order = metadata.order.clone();
             let mut create_table_sql = String::new();
