@@ -1,6 +1,6 @@
 ---
 source: src/lib.rs
-assertion_line: 1892
+assertion_line: 1917
 expression: "&value"
 
 ---
@@ -22,6 +22,9 @@ resources:
         - name: releaseDate
           type: date
           count: 2
+        - name: developer_name
+          type: text
+          count: 2
         - name: rating_code
           type: text
           count: 2
@@ -30,21 +33,6 @@ resources:
           count: 2
       primaryKey: _link
     path: csv/main.csv
-  - profile: tabular-data-resource
-    name: developer
-    schema:
-      fields:
-        - name: _link
-          type: text
-          count: 2
-        - name: _link_main
-          type: text
-          count: 2
-        - name: name
-          type: text
-          count: 2
-      primaryKey: _link
-    path: csv/developer.csv
   - profile: tabular-data-resource
     name: platforms
     schema:

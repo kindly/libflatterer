@@ -1,13 +1,28 @@
 ---
 source: src/lib.rs
-assertion_line: 1892
+assertion_line: 1917
 expression: "&value"
 
 ---
 profile: tabular-data-package
 resources:
   - profile: tabular-data-resource
-    name: main
+    name: Devs
+    schema:
+      fields:
+        - name: _link
+          type: text
+          count: 2
+        - name: _link_main
+          type: text
+          count: 2
+        - name: name
+          type: text
+          count: 2
+      primaryKey: _link
+    path: csv/Devs.csv
+  - profile: tabular-data-resource
+    name: Games
     schema:
       fields:
         - name: _link
@@ -22,9 +37,6 @@ resources:
         - name: releaseDate
           type: date
           count: 2
-        - name: developer_name
-          type: text
-          count: 2
         - name: rating_code
           type: text
           count: 2
@@ -32,20 +44,5 @@ resources:
           type: text
           count: 2
       primaryKey: _link
-    path: csv/main.csv
-  - profile: tabular-data-resource
-    name: platforms
-    schema:
-      fields:
-        - name: _link
-          type: text
-          count: 3
-        - name: _link_main
-          type: text
-          count: 3
-        - name: name
-          type: text
-          count: 3
-      primaryKey: _link
-    path: csv/platforms.csv
+    path: csv/Games.csv
 

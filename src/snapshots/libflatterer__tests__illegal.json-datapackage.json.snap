@@ -1,6 +1,6 @@
 ---
 source: src/lib.rs
-assertion_line: 1892
+assertion_line: 1917
 expression: "&value"
 
 ---
@@ -13,7 +13,7 @@ resources:
         - name: _link
           type: text
           count: 1
-        - name: aaa_foo
+        - name: "\u0000"
           type: text
           count: 1
       primaryKey: _link

@@ -1,6 +1,6 @@
 ---
 source: src/lib.rs
-assertion_line: 1892
+assertion_line: 1917
 expression: "&value"
 
 ---

@@ -999,9 +999,9 @@ impl FlatFiles {
     }
 
     pub fn write_data_package(&mut self) -> Result<()> {
-        let metadata_file = File::create(self.output_path.join("data_package.json")).context(
+        let metadata_file = File::create(self.output_path.join("datapackage.json")).context(
             FlattererFileWriteSnafu {
-                filename: "data_package.json",
+                filename: "datapackage.json",
             },
         )?;
 
@@ -1051,7 +1051,7 @@ impl FlatFiles {
         });
 
         serde_json::to_writer_pretty(metadata_file, &data_package).context(SerdeWriteSnafu {
-            filename: "data_package.json",
+            filename: "datapackage.json",
         })?;
 
         Ok(())
@@ -1903,7 +1903,7 @@ mod tests {
         output_tmp_dir.push("tmp");
         assert!(!output_tmp_dir.exists());
 
-        let mut test_files = vec!["data_package.json", "fields.csv", "tables.csv"];
+        let mut test_files = vec!["datapackage.json", "fields.csv", "tables.csv"];
 
         test_files.extend(output);
 
