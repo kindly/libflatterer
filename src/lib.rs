@@ -335,8 +335,6 @@ impl FlatFiles {
         path_separator: String,
         schema_titles: String,
     ) -> Result<Self> {
-        smartstring::validate();
-
         let output_path = PathBuf::from(output_dir);
         if output_path.is_dir() {
             if force {
@@ -1506,7 +1504,18 @@ impl FlatFiles {
         )
         .context(RusqliteSnafu {})?;
 
-        for (table_name, table_title) in self.table_order.iter() {
+
+        let mut new_table_order = self.table_order.keys()
+            .cloned()
+            .filter(|table| table != &self.main_table_name)
+            .collect_vec();
+
+        new_table_order.sort_by(|a, b| {a.len().cmp(&b.len())});
+
+        new_table_order.insert(0,self.main_table_name.clone());
+
+        for table_name in new_table_order.iter() {
+            let table_title = self.table_order.get(table_name).unwrap();
             let mut output_row = Vec::new();
             let metadata = self.table_metadata.get(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
@@ -1520,22 +1529,42 @@ impl FlatFiles {
             let table_order = metadata.order.clone();
             let mut create_table_sql = String::new();
             create_table_sql.push_str(&format!(
-                "CREATE TABLE \"{ }\"(",
+                "CREATE TABLE \"{ }\"(\n",
                 table_title.to_lowercase()
             ));
 
             let mut fields = Vec::new();
+            let mut indexes = Vec::new();
+            let mut foreign_keys = Vec::new();
+
             for order in table_order {
                 if metadata.ignore_fields[order] {
                     continue;
                 }
+                let primary_key = if metadata.fields[order] == "_link" {" PRIMARY KEY"} else {""};
+
                 fields.push(format!(
-                    "    \"{}\" {}",
+                    "    \"{}\" {}{}",
                     metadata.field_titles_lc[order],
-                    postgresql::to_postgresql_type(&metadata.field_type[order])
+                    postgresql::to_postgresql_type(&metadata.field_type[order]),
+                    primary_key
                 ));
+                let field_name =  &metadata.fields[order];
+                let field_title =  &metadata.field_titles_lc[order];
+
+                if field_name.starts_with("_link") && field_name != "_link" {
+                    indexes.push(format!("CREATE INDEX idx_{table_title}_{field_title} on {table_title}({field_title});"));
+                    let foreign_table = self.table_order.get(&field_name[6..]).unwrap();
+                    foreign_keys.push(format!("FOREIGN KEY ({field_title}) REFERENCES {foreign_table}(_link)"));
+                }
             }
-            create_table_sql.push_str(&format!("{});\n\n", fields.join(",\n")));
+
+            let comma = if foreign_keys.is_empty() {""} else {",\n"};
+
+            create_table_sql.push_str(&format!("{}\n{}{});\n", fields.join(",\n"), comma, foreign_keys.join(",\n")));
+
+            create_table_sql.push_str(&format!("{}\n\n", indexes.join("\n")));
+
             log::debug!("create table sql: {create_table_sql}");
             conn.execute(&create_table_sql, [])
                 .context(RusqliteSnafu {})?;

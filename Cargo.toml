@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.12.6"
+version = "0.12.7"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -23,12 +23,12 @@ smallvec="1.6.1"
 regex="1"
 jsonref= "0.4"
 slug="0.1"
-smartstring={version = "0.2", features = ["serde"] }
+smartstring={version = "1.0.0", features = ["serde"] }
 snafu = {version = "0.7.0"}
 indexmap = {version = "1.7.0", features = ["serde"] }
 log = "0.4"
 lazy_static = "1"
-rusqlite = {version = "0.26.3", features = ["bundled"] }
+rusqlite = {version = "0.27.0", features = ["bundled"] }
 
 
 [dev-dependencies]
