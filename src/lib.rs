@@ -1012,25 +1012,44 @@ impl FlatFiles {
                 continue;
             }
             let table_order = metadata.order.clone();
+            let mut foreign_keys = vec![];
 
             for order in table_order {
                 if metadata.ignore_fields[order] {
                     continue;
                 }
+                let data_type = match metadata.field_type[order].as_str() {
+                    "text" => "string",
+                    rest => &rest
+                };
+
+                let field_name = &metadata.fields[order];
+                let field_title = &metadata.fields[order];
+
                 let field = json!({
-                    "name": metadata.field_titles[order],
-                    "type": metadata.field_type[order],
+                    "name": field_name,
+                    "type": data_type,
                     "count": metadata.field_counts[order],
                 });
                 fields.push(field);
+
+                if field_name.starts_with("_link") && field_name != "_link" {
+                    let foreign_table = self.table_order.get(&field_name[6..]).unwrap();
+                    foreign_keys.push(
+                        json!(
+                        {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
+                    ))
+                };
             }
+
 
             let mut resource = json!({
                 "profile": "tabular-data-resource",
-                "name": table_title,
+                "name": table_title.to_lowercase(),
                 "schema": {
                     "fields": fields,
-                    "primaryKey": "_link"
+                    "primaryKey": "_link",
+                    "foreignKeys": foreign_keys
                 }
             });
             if self.csv {

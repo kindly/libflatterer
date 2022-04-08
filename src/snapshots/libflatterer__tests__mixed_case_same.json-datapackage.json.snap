@@ -1,8 +1,7 @@
 ---
 source: src/lib.rs
-assertion_line: 1917
+assertion_line: 1964
 expression: "&value"
-
 ---
 profile: tabular-data-package
 resources:
@@ -11,53 +10,64 @@ resources:
     schema:
       fields:
         - name: _link
-          type: text
+          type: string
           count: 2
         - name: id
           type: number
           count: 2
         - name: title
-          type: text
+          type: string
           count: 2
         - name: releaseDate
           type: date
           count: 2
         - name: rating_code
-          type: text
+          type: string
           count: 2
         - name: rating_Code
-          type: text
+          type: string
           count: 2
       primaryKey: _link
+      foreignKeys: []
     path: csv/main.csv
   - profile: tabular-data-resource
     name: developer
     schema:
       fields:
         - name: _link
-          type: text
+          type: string
           count: 2
         - name: _link_main
-          type: text
+          type: string
           count: 2
         - name: name
-          type: text
+          type: string
           count: 2
       primaryKey: _link
+      foreignKeys:
+        - fields: _link_main
+          reference:
+            resource: main
+            fields: _link
     path: csv/developer.csv
   - profile: tabular-data-resource
     name: platforms
     schema:
       fields:
         - name: _link
-          type: text
+          type: string
           count: 3
         - name: _link_main
-          type: text
+          type: string
           count: 3
         - name: name
-          type: text
+          type: string
           count: 3
       primaryKey: _link
+      foreignKeys:
+        - fields: _link_main
+          reference:
+            resource: main
+            fields: _link
     path: csv/platforms.csv
 
