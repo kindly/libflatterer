@@ -1020,6 +1020,7 @@ impl FlatFiles {
                 }
                 let data_type = match metadata.field_type[order].as_str() {
                     "text" => "string",
+                    "date" => "datetime",
                     rest => &rest
                 };
 
