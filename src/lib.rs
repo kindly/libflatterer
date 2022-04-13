@@ -477,8 +477,15 @@ impl FlatFiles {
                         .iter()
                         .map(|val| (val.as_str().unwrap().to_string())) //value known as str
                         .collect();
-                    let new_value = json!(keys.join(","));
-                    to_insert.push((key.clone(), new_value))
+                    let mut csv_bytes = vec![];
+                    {
+                        let mut csv_writer = csv::Writer::from_writer(&mut csv_bytes);
+                        csv_writer.write_record(keys).unwrap(); // safe as just writing to vec
+                    }
+                    let values = String::from_utf8_lossy(&csv_bytes);
+                    let trimmed = values.trim();
+                    let trimmed_value = json!(trimmed);
+                    to_insert.push((key.clone(), trimmed_value))
                 } else if obj_count == arr_length {
                     to_delete.push(key.clone());
                     let mut removed_array = value.take(); // obj.remove(&key).unwrap(); //key known
@@ -1653,7 +1660,6 @@ fn value_convert(
     num: usize,
     date_re: &Regex,
 ) -> String {
-    //let value_type = output_fields.get("type");
     let value_type = &field_type[num];
 
     match value {
