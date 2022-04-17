@@ -1,8 +1,7 @@
 ---
 source: src/lib.rs
-assertion_line: 1898
+assertion_line: 2014
 expression: output
-
 ---
 - "_link,_link_main,name"
 - "0.platforms.0,0,PC"

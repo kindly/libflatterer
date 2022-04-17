@@ -29,6 +29,8 @@ indexmap = {version = "1.7.0", features = ["serde"] }
 log = "0.4"
 lazy_static = "1"
 rusqlite = {version = "0.27.0", features = ["bundled"] }
+datapackage_convert = "0.3.0"
+typed-builder = "0.10.0"
 
 
 [dev-dependencies]

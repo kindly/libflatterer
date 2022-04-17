@@ -20,6 +20,7 @@
 //!     true, // make csv
 //!     true, // make xlsx
 //!     true, // make sqlite
+//!     true, // make parquet
 //!     "main".to_string(), // main table name
 //!     vec![], // list of json paths to omit object as if it was array
 //!     false, // inline one to one tables if possible
@@ -27,6 +28,7 @@
 //!     "prefix_".to_string(), // table prefix
 //!     "_".to_string(), // path seperator
 //!     "".to_string(), // schema titles
+//!     "".to_string(), // id_prefix
 //! ).unwrap();
 //!
 //! flatten(
@@ -50,6 +52,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{panic, thread};
 
+use datapackage_convert;
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 pub use guess_array::guess_array;
@@ -186,6 +189,7 @@ pub struct FlatFiles {
     csv: bool,
     pub xlsx: bool,
     pub sqlite: bool,
+    pub parquet: bool,
     pub main_table_name: String,
     emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]>,
     row_number: usize,
@@ -207,6 +211,7 @@ pub struct FlatFiles {
     only_tables: bool,
     table_order: HashMap<String, String>,
     pub sqlite_path: String,
+    pub id_prefix: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -311,12 +316,14 @@ impl FlatFiles {
             false,
             false,
             false,
+            false,
             "main".to_string(),
             vec![],
             false,
             "".to_string(),
             "".to_string(),
             "_".to_string(),
+            "".to_string(),
             "".to_string(),
         )
     }
@@ -326,6 +333,7 @@ impl FlatFiles {
         csv: bool,
         xlsx: bool,
         sqlite: bool,
+        parquet: bool,
         force: bool,
         main_table_name: String,
         emit_obj: Vec<Vec<String>>,
@@ -334,6 +342,7 @@ impl FlatFiles {
         table_prefix: String,
         path_separator: String,
         schema_titles: String,
+        id_prefix: String,
     ) -> Result<Self> {
         let output_path = PathBuf::from(output_dir);
         if output_path.is_dir() {
@@ -358,6 +367,7 @@ impl FlatFiles {
             csv,
             xlsx,
             sqlite,
+            parquet,
             main_table_name: [table_prefix.clone(), main_table_name].concat(),
             emit_obj: smallvec_emit_obj,
             row_number: 0,
@@ -379,6 +389,7 @@ impl FlatFiles {
             only_tables: false,
             table_order: HashMap::new(),
             sqlite_path: "".to_string(),
+            id_prefix
         };
 
         flat_files.set_csv(csv)?;
@@ -623,13 +634,17 @@ impl FlatFiles {
         if one_to_many_full_paths.is_empty() {
             obj.insert(
                 String::from("_link"),
-                Value::String(self.row_number.to_string()),
+                Value::String([
+                    self.id_prefix.to_owned(),
+                    self.row_number.to_string()
+                ].concat()),
             );
         } else {
             obj.insert(
                 String::from("_link"),
                 Value::String(
                     [
+                        self.id_prefix.to_owned(),
                         self.row_number.to_string(),
                         ".".to_string(),
                         one_to_many_full_paths[one_to_many_full_paths.len() - 1]
@@ -651,6 +666,7 @@ impl FlatFiles {
                     .concat(),
                     Value::String(
                         [
+                            self.id_prefix.to_owned(),
                             self.row_number.to_string(),
                             ".".to_string(),
                             full.iter().join("."),
@@ -663,6 +679,7 @@ impl FlatFiles {
                     String::from("_link"),
                     Value::String(
                         [
+                            self.id_prefix.to_owned(),
                             self.row_number.to_string(),
                             ".".to_string(),
                             full.iter().join("."),
@@ -676,7 +693,10 @@ impl FlatFiles {
         if table_name != self.main_table_name {
             obj.insert(
                 ["_link_", &self.main_table_name].concat(),
-                Value::String(self.row_number.to_string()),
+                Value::String([
+                    self.id_prefix.to_owned(),
+                    self.row_number.to_string()
+                ].concat())
             );
         };
 
@@ -687,7 +707,7 @@ impl FlatFiles {
     pub fn create_rows(&mut self) -> Result<()> {
         for (table, rows) in self.table_rows.iter_mut() {
             if !self.tmp_csvs.contains_key(table) {
-                if self.csv || self.xlsx || self.sqlite {
+                if self.csv || self.xlsx || self.sqlite || self.parquet {
                     let output_path = self.output_path.join(format!("tmp/{}.csv", table));
                     self.tmp_csvs.insert(
                         table.clone(),
@@ -975,10 +995,11 @@ impl FlatFiles {
             }
         }
 
-        if self.csv {
+        if self.csv || self.parquet {
             self.write_csvs()?;
             self.write_postgresql()?;
             self.write_sqlite()?;
+            self.write_data_package()?;
         };
 
         if self.xlsx {
@@ -989,6 +1010,16 @@ impl FlatFiles {
             self.write_sqlite_db()?;
         };
 
+        if self.parquet {
+            log::info!("Converting to parquet");
+            let options = datapackage_convert::Options::builder().delete_input_csv(!self.csv).build();
+            datapackage_convert::datapackage_to_parquet_with_options(
+                self.output_path.join("parquet").clone(),
+                self.output_path.to_string_lossy().into(), 
+                options
+            ).unwrap();
+        };
+
         let tmp_path = self.output_path.join("tmp");
 
         if remove_dir_all(&tmp_path).is_err() {
@@ -996,7 +1027,6 @@ impl FlatFiles {
         }
         info!("Writing metadata files");
 
-        self.write_data_package()?;
         self.write_fields_csv()?;
         self.write_tables_csv()?;
 
@@ -1906,8 +1936,15 @@ mod tests {
             name.push_str("-inline")
         }
 
+        flat_files.csv = true;
         flat_files.xlsx = true;
         flat_files.sqlite = true;
+        flat_files.parquet = true;
+
+        if let Some(id_prefix) = options["id_prefix"].as_str() {
+            flat_files.id_prefix = id_prefix.into();
+            name.push_str("-id_prefix")
+        }
 
         if let Some(tables_csv) = options["tables_csv"].as_str() {
             let tables_only = options["tables_only"].as_bool().unwrap();
@@ -2063,6 +2100,15 @@ mod tests {
     }
 
     #[test]
+    fn test_id_prefix() {
+        test_output(
+            &format!("fixtures/basic.{}", "json"),
+            vec!["csv/main.csv", "csv/platforms.csv", "csv/developer.csv"],
+            json!({"id_prefix": "prefix_"}),
+        );
+    }
+
+    #[test]
     fn test_tables_csv() {
         for tables_only in [true, false] {
             test_output(
@@ -2207,12 +2253,14 @@ mod tests {
             true,
             true,
             true,
+            true,
             "main".to_string(),
             vec![],
             false,
             "".to_string(),
             "".to_string(),
             "_".to_string(),
+            "".to_string(),
             "".to_string(),
         )
         .unwrap();
@@ -2262,12 +2310,14 @@ mod tests {
             true,
             true,
             true,
+            true,
             "main".to_string(),
             vec![],
             true,
             "".to_string(),
             "".to_string(),
             "_".to_string(),
+            "".to_string(),
             "".to_string(),
         )
         .unwrap();
@@ -2300,12 +2350,14 @@ mod tests {
             true,
             true,
             true,
+            true,
             "main".to_string(),
             vec![],
             true,
             "".to_string(),
             "".to_string(),
             "_".to_string(),
+            "".to_string(),
             "".to_string(),
         )
         .unwrap();
