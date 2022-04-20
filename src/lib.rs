@@ -1769,7 +1769,7 @@ pub fn flatten_multi<R: Read>(
     mut input: BufReader<R>,
     output: String,
     options: Options,
-) -> Result<FlatFiles> {
+) -> Result<()> {
     let output_path = PathBuf::from(output.clone());
     if output_path.is_dir() {
         if options.force {
@@ -1785,7 +1785,7 @@ pub fn flatten_multi<R: Read>(
     create_dir_all(&tmp_path).context(FlattererCreateDirSnafu {
         filename: tmp_path.to_string_lossy(),
     })?;
-
+    Ok(())
 }
 
 pub fn flatten<R: Read>(
