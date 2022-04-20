@@ -8,34 +8,18 @@
 //! ```
 //! use tempfile::TempDir;
 //! use std::fs::File;
-//! use libflatterer::{FlatFiles, flatten};
+//! use libflatterer::{FlatFiles, flatten, Options};
 //! use std::io::BufReader;
 //!
 //! let tmp_dir = TempDir::new().unwrap();
 //! let output_dir = tmp_dir.path().join("output");
-//! let output_path = output_dir.to_string_lossy().into_owned();
-//! let flat_files = FlatFiles::new(
-//!     output_path, // output directory
-//!     true, // output directory
-//!     true, // make csv
-//!     true, // make xlsx
-//!     true, // make sqlite
-//!     true, // make parquet
-//!     "main".to_string(), // main table name
-//!     vec![], // list of json paths to omit object as if it was array
-//!     false, // inline one to one tables if possible
-//!     "".to_string(), // path or uri to JSONSchema
-//!     "prefix_".to_string(), // table prefix
-//!     "_".to_string(), // path seperator
-//!     "".to_string(), // schema titles
-//!     "".to_string(), // id_prefix
-//! ).unwrap();
+//! let options = Options::builder().xlsx(true).sqlite(true).parquet(true).table_prefix("prefix_".into()).build();
 //!
 //! flatten(
 //!    BufReader::new(File::open("fixtures/basic.json").unwrap()), // reader
-//!    flat_files, // FlatFile instance.
-//!    vec![],
-//!    false); // Path to array.
+//!    output_dir.to_string_lossy().into(), // output directory
+//!    options, // output directory
+//! ).unwrap();
 //!```
 mod guess_array;
 mod postgresql;
@@ -68,6 +52,7 @@ use snafu::{Backtrace, ResultExt, Snafu};
 use xlsxwriter::Workbook;
 use yajlish::Parser;
 use yajlparser::Item;
+use typed_builder::TypedBuilder;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -183,14 +168,57 @@ pub enum TmpCSVWriter {
     None(),
 }
 
+#[derive(Default, Debug, TypedBuilder, Clone)]
+pub struct Options {
+    #[builder(default=true)]
+    pub csv: bool,
+    #[builder(default="main".into())]
+    pub main_table_name: String,
+    #[builder(default)]
+    pub xlsx: bool,
+    #[builder(default)]
+    pub sqlite: bool,
+    #[builder(default)]
+    pub parquet: bool,
+    #[builder(default)]
+    pub only_fields: bool,
+    #[builder(default)]
+    pub only_tables: bool,
+    #[builder(default)]
+    pub inline_one_to_one: bool,
+    #[builder(default)]
+    pub table_prefix: String,
+    #[builder(default = "_".into())]
+    pub path_separator: String,
+    #[builder(default)]
+    pub preview: usize,
+    #[builder(default)]
+    pub sqlite_path: String,
+    #[builder(default)]
+    pub id_prefix: String,
+    #[builder(default)]
+    pub emit_obj: Vec<Vec<String>>,
+    #[builder(default)]
+    pub force: bool,
+    #[builder(default)]
+    pub schema: String,
+    #[builder(default)]
+    pub schema_titles: String,
+    #[builder(default)]
+    pub path: Vec<String>,
+    #[builder(default)]
+    pub json_stream: bool,
+    #[builder(default)]
+    pub tables_csv: String,
+    #[builder(default)]
+    pub fields_csv: String
+}
+
 #[derive(Debug)]
 pub struct FlatFiles {
-    output_path: PathBuf,
-    csv: bool,
-    pub xlsx: bool,
-    pub sqlite: bool,
-    pub parquet: bool,
-    pub main_table_name: String,
+    pub options: Options,
+    pub output_dir: PathBuf,
+    main_table_name: String,
     emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]>,
     row_number: usize,
     sub_array_row_number: usize,
@@ -199,19 +227,11 @@ pub struct FlatFiles {
     table_rows: HashMap<String, Vec<Map<String, Value>>>,
     tmp_csvs: HashMap<String, TmpCSVWriter>,
     table_metadata: HashMap<String, TableMetadata>,
-    pub only_fields: bool,
-    pub inline_one_to_one: bool,
     one_to_many_arrays: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
     one_to_one_arrays: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
-    pub table_prefix: String,
-    pub path_separator: String,
     order_map: HashMap<String, usize>,
     field_titles_map: HashMap<String, String>,
-    pub preview: usize,
-    only_tables: bool,
     table_order: HashMap<String, String>,
-    pub sqlite_path: String,
-    pub id_prefix: String,
 }
 
 #[derive(Serialize, Debug)]
@@ -310,43 +330,20 @@ impl Write for JLWriter {
 
 impl FlatFiles {
     pub fn new_with_defaults(output_dir: String) -> Result<Self> {
+        let options = Options::builder().build();
         FlatFiles::new(
             output_dir,
-            true,
-            false,
-            false,
-            false,
-            false,
-            "main".to_string(),
-            vec![],
-            false,
-            "".to_string(),
-            "".to_string(),
-            "_".to_string(),
-            "".to_string(),
-            "".to_string(),
+            options
         )
     }
 
     pub fn new(
         output_dir: String,
-        csv: bool,
-        xlsx: bool,
-        sqlite: bool,
-        parquet: bool,
-        force: bool,
-        main_table_name: String,
-        emit_obj: Vec<Vec<String>>,
-        inline_one_to_one: bool,
-        schema: String,
-        table_prefix: String,
-        path_separator: String,
-        schema_titles: String,
-        id_prefix: String,
+        options: Options
     ) -> Result<Self> {
-        let output_path = PathBuf::from(output_dir);
+        let output_path = PathBuf::from(output_dir.clone());
         if output_path.is_dir() {
-            if force {
+            if options.force {
                 remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
                     filename: output_path.to_string_lossy(),
                 })?;
@@ -362,13 +359,12 @@ impl FlatFiles {
 
         let smallvec_emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]> = smallvec![];
 
+        let main_table_name = [options.table_prefix.clone(), options.main_table_name.clone()].concat();
+
         let mut flat_files = FlatFiles {
-            output_path,
-            csv,
-            xlsx,
-            sqlite,
-            parquet,
-            main_table_name: [table_prefix.clone(), main_table_name].concat(),
+            output_dir: output_dir.into(),
+            options,
+            main_table_name,
             emit_obj: smallvec_emit_obj,
             row_number: 0,
             sub_array_row_number: 0,
@@ -377,36 +373,35 @@ impl FlatFiles {
             table_rows: HashMap::new(),
             tmp_csvs: HashMap::new(),
             table_metadata: HashMap::new(),
-            only_fields: false,
-            inline_one_to_one,
             one_to_many_arrays: SmallVec::new(),
             one_to_one_arrays: SmallVec::new(),
-            table_prefix,
-            path_separator,
             order_map: HashMap::new(),
             field_titles_map: HashMap::new(),
-            preview: 0,
-            only_tables: false,
             table_order: HashMap::new(),
-            sqlite_path: "".to_string(),
-            id_prefix
         };
 
-        flat_files.set_csv(csv)?;
+        flat_files.set_csv()?;
 
-        if !schema.is_empty() {
-            flat_files.set_schema(schema, schema_titles)?;
+        if !flat_files.options.schema.is_empty() {
+            flat_files.set_schema()?;
         };
 
-        flat_files.set_emit_obj(emit_obj)?;
+        flat_files.set_emit_obj()?;
+
+        if !flat_files.options.tables_csv.is_empty() {
+            flat_files.use_tables_csv()?;
+        };
+
+        if !flat_files.options.fields_csv.is_empty() {
+            flat_files.use_fields_csv()?;
+        };
 
         Ok(flat_files)
     }
 
-    fn set_csv(&mut self, csv: bool) -> Result<()> {
-        self.csv = csv;
-        let csv_path = self.output_path.join("csv");
-        if csv {
+    fn set_csv(&mut self) -> Result<()> {
+        let csv_path = self.output_dir.join("csv");
+        if self.options.csv {
             if !csv_path.is_dir() {
                 create_dir_all(&csv_path).context(FlattererCreateDirSnafu {
                     filename: csv_path.to_string_lossy(),
@@ -420,18 +415,18 @@ impl FlatFiles {
         Ok(())
     }
 
-    fn set_schema(&mut self, schema: String, schema_titles: String) -> Result<()> {
+    fn set_schema(&mut self) -> Result<()> {
         let schema_analysis =
-            schema_analysis::schema_analysis(&schema, &self.path_separator, schema_titles)
+            schema_analysis::schema_analysis(&self.options.schema, &self.options.path_separator, self.options.schema_titles.clone())
                 .context(JSONRefSnafu {})?;
         self.order_map = schema_analysis.field_order_map;
         self.field_titles_map = schema_analysis.field_titles_map;
         Ok(())
     }
 
-    fn set_emit_obj(&mut self, emit_obj: Vec<Vec<String>>) -> Result<()> {
-        for emit_vec in emit_obj {
-            self.emit_obj.push(SmallVec::from_vec(emit_vec))
+    fn set_emit_obj(&mut self) -> Result<()> {
+        for emit_vec in &self.options.emit_obj {
+            self.emit_obj.push(SmallVec::from_vec(emit_vec.clone()))
         }
         Ok(())
     }
@@ -449,8 +444,8 @@ impl FlatFiles {
         let mut table_name = String::new();
         if emit {
             table_name = [
-                self.table_prefix.clone(),
-                no_index_path.join(&self.path_separator),
+                self.options.table_prefix.clone(),
+                no_index_path.join(&self.options.path_separator),
             ]
             .concat();
 
@@ -516,7 +511,7 @@ impl FlatFiles {
                         let mut new_one_to_many_no_index_paths = one_to_many_no_index_paths.clone();
                         new_one_to_many_no_index_paths.push(new_no_index_path.clone());
 
-                        if self.inline_one_to_one
+                        if self.options.inline_one_to_one
                             && !self.one_to_many_arrays.contains(&new_no_index_path)
                         {
                             if arr_length == 1 {
@@ -590,7 +585,7 @@ impl FlatFiles {
                         for (new_key, new_value) in my_obj.iter_mut() {
                             let mut object_key = String::with_capacity(100);
                             object_key.push_str(key);
-                            object_key.push_str(&self.path_separator);
+                            object_key.push_str(&self.options.path_separator);
                             object_key.push_str(new_key);
 
                             to_insert.push((object_key, new_value.take()));
@@ -635,7 +630,7 @@ impl FlatFiles {
             obj.insert(
                 String::from("_link"),
                 Value::String([
-                    self.id_prefix.to_owned(),
+                    self.options.id_prefix.to_owned(),
                     self.row_number.to_string()
                 ].concat()),
             );
@@ -644,7 +639,7 @@ impl FlatFiles {
                 String::from("_link"),
                 Value::String(
                     [
-                        self.id_prefix.to_owned(),
+                        self.options.id_prefix.to_owned(),
                         self.row_number.to_string(),
                         ".".to_string(),
                         one_to_many_full_paths[one_to_many_full_paths.len() - 1]
@@ -661,12 +656,12 @@ impl FlatFiles {
                 obj.insert(
                     [
                         "_link_".to_string(),
-                        no_index.iter().join(&self.path_separator),
+                        no_index.iter().join(&self.options.path_separator),
                     ]
                     .concat(),
                     Value::String(
                         [
-                            self.id_prefix.to_owned(),
+                            self.options.id_prefix.to_owned(),
                             self.row_number.to_string(),
                             ".".to_string(),
                             full.iter().join("."),
@@ -679,7 +674,7 @@ impl FlatFiles {
                     String::from("_link"),
                     Value::String(
                         [
-                            self.id_prefix.to_owned(),
+                            self.options.id_prefix.to_owned(),
                             self.row_number.to_string(),
                             ".".to_string(),
                             full.iter().join("."),
@@ -694,7 +689,7 @@ impl FlatFiles {
             obj.insert(
                 ["_link_", &self.main_table_name].concat(),
                 Value::String([
-                    self.id_prefix.to_owned(),
+                    self.options.id_prefix.to_owned(),
                     self.row_number.to_string()
                 ].concat())
             );
@@ -707,8 +702,8 @@ impl FlatFiles {
     pub fn create_rows(&mut self) -> Result<()> {
         for (table, rows) in self.table_rows.iter_mut() {
             if !self.tmp_csvs.contains_key(table) {
-                if self.csv || self.xlsx || self.sqlite || self.parquet {
-                    let output_path = self.output_path.join(format!("tmp/{}.csv", table));
+                if self.options.csv || self.options.xlsx || self.options.sqlite || self.options.parquet {
+                    let output_path = self.output_dir.join(format!("tmp/{}.csv", table));
                     self.tmp_csvs.insert(
                         table.clone(),
                         TmpCSVWriter::Disk(
@@ -726,18 +721,18 @@ impl FlatFiles {
             }
 
             if !self.table_metadata.contains_key(table) {
-                let output_path = self.output_path.join(format!("tmp/{}.csv", table));
+                let output_path = self.output_dir.join(format!("tmp/{}.csv", table));
                 self.table_metadata.insert(
                     table.clone(),
                     TableMetadata::new(
                         table,
                         &self.main_table_name,
-                        &self.path_separator,
-                        &self.table_prefix,
+                        &self.options.path_separator,
+                        &self.options.table_prefix,
                         output_path,
                     ),
                 );
-                if !self.only_tables && !self.table_order.contains_key(table) {
+                if !self.options.only_tables && !self.table_order.contains_key(table) {
                     self.table_order.insert(table.clone(), table.clone());
                 }
             }
@@ -762,7 +757,7 @@ impl FlatFiles {
                 }
                 for (key, value) in row {
 
-                    if !table_metadata.fields_set.contains(key) && !self.only_fields {
+                    if !table_metadata.fields_set.contains(key) && !self.options.only_fields {
                         table_metadata.fields.push(key.clone());
                         table_metadata.fields_set.insert(key.clone());
                         table_metadata.field_counts.push(1);
@@ -839,47 +834,44 @@ impl FlatFiles {
         }
     }
 
-    pub fn use_tables_csv(&mut self, filepath: String, only_tables: bool) -> Result<()> {
-        self.only_tables = only_tables;
-        let mut tables_reader = Reader::from_path(&filepath).context(FlattererCSVReadSnafu {
-            filepath: &filepath,
+    pub fn use_tables_csv(&mut self) -> Result<()> {
+        let mut tables_reader = Reader::from_path(&self.options.tables_csv).context(FlattererCSVReadSnafu {
+            filepath: &self.options.tables_csv,
         })?;
         for row in tables_reader.deserialize() {
             let row: TablesRecord = row.context(FlattererCSVReadSnafu {
-                filepath: &filepath,
+                filepath: &self.options.tables_csv,
             })?;
             self.table_order.insert(row.table_name, row.table_title);
         }
         Ok(())
     }
 
-    pub fn use_fields_csv(&mut self, filepath: String, only_fields: bool) -> Result<()> {
-        let mut fields_reader = Reader::from_path(&filepath).context(FlattererCSVReadSnafu {
-            filepath: &filepath,
+    pub fn use_fields_csv(&mut self) -> Result<()> {
+        let mut fields_reader = Reader::from_path(&self.options.fields_csv).context(FlattererCSVReadSnafu {
+            filepath: &self.options.fields_csv,
         })?;
-
-        self.only_fields = only_fields;
 
         for row in fields_reader.deserialize() {
             let row: FieldsRecord = row.context(FlattererCSVReadSnafu {
-                filepath: &filepath,
+                filepath: &self.options.fields_csv,
             })?;
 
             if !self.table_metadata.contains_key(&row.table_name) {
                 let output_path = self
-                    .output_path
+                    .output_dir
                     .join(format!("tmp/{}.csv", &row.table_name));
                 self.table_metadata.insert(
                     row.table_name.clone(),
                     TableMetadata::new(
                         &row.table_name,
                         &self.main_table_name,
-                        &self.path_separator,
-                        &self.table_prefix,
+                        &self.options.path_separator,
+                        &self.options.table_prefix,
                         output_path,
                     ),
                 );
-                if !self.only_tables {
+                if !self.options.only_tables {
                     self.table_order
                         .insert(row.table_name.clone(), row.table_name.clone());
                 }
@@ -905,7 +897,7 @@ impl FlatFiles {
         let one_to_many_table_names = self
             .one_to_many_arrays
             .iter()
-            .map(|item| item.join(&self.path_separator))
+            .map(|item| item.join(&self.options.path_separator))
             .collect_vec();
 
         for metadata in self.table_metadata.values_mut() {
@@ -926,8 +918,8 @@ impl FlatFiles {
         for table_path in &self.one_to_one_arrays {
             let table_name = format!(
                 "{}{}",
-                self.table_prefix,
-                table_path.iter().join(&self.path_separator)
+                self.options.table_prefix,
+                table_path.iter().join(&self.options.path_separator)
             );
             if let Some(table_metadata) = self.table_metadata.get_mut(&table_name) {
                 table_metadata.ignore = true
@@ -995,32 +987,32 @@ impl FlatFiles {
             }
         }
 
-        if self.csv || self.parquet {
+        if self.options.csv || self.options.parquet {
             self.write_csvs()?;
             self.write_postgresql()?;
             self.write_sqlite()?;
             self.write_data_package()?;
         };
 
-        if self.xlsx {
+        if self.options.xlsx {
             self.write_xlsx()?;
         };
 
-        if self.sqlite {
+        if self.options.sqlite {
             self.write_sqlite_db()?;
         };
 
-        if self.parquet {
+        if self.options.parquet {
             log::info!("Converting to parquet");
-            let options = datapackage_convert::Options::builder().delete_input_csv(!self.csv).build();
+            let options = datapackage_convert::Options::builder().delete_input_csv(!self.options.csv).build();
             datapackage_convert::datapackage_to_parquet_with_options(
-                self.output_path.join("parquet").clone(),
-                self.output_path.to_string_lossy().into(), 
+                self.output_dir.join("parquet").clone(),
+                self.output_dir.to_string_lossy().into(), 
                 options
             ).unwrap();
         };
 
-        let tmp_path = self.output_path.join("tmp");
+        let tmp_path = self.output_dir.join("tmp");
 
         if remove_dir_all(&tmp_path).is_err() {
             log::warn!("Temp files can not be deleted, continuing anyway");
@@ -1034,7 +1026,7 @@ impl FlatFiles {
     }
 
     pub fn write_data_package(&mut self) -> Result<()> {
-        let metadata_file = File::create(self.output_path.join("datapackage.json")).context(
+        let metadata_file = File::create(self.output_dir.join("datapackage.json")).context(
             FlattererFileWriteSnafu {
                 filename: "datapackage.json",
             },
@@ -1090,7 +1082,7 @@ impl FlatFiles {
                     "foreignKeys": foreign_keys
                 }
             });
-            if self.csv {
+            if self.options.csv {
                 resource.as_object_mut().unwrap().insert(
                     "path".to_string(),
                     Value::String(format!("csv/{}.csv", table_title)),
@@ -1113,7 +1105,7 @@ impl FlatFiles {
     }
 
     pub fn write_tables_csv(&mut self) -> Result<()> {
-        let filepath = self.output_path.join("tables.csv");
+        let filepath = self.output_dir.join("tables.csv");
         let mut table_writer = Writer::from_path(&filepath).context(FlattererCSVWriteSnafu {
             filepath: filepath.clone(),
         })?;
@@ -1138,7 +1130,7 @@ impl FlatFiles {
     }
 
     pub fn write_fields_csv(&mut self) -> Result<()> {
-        let filepath = self.output_path.join("fields.csv");
+        let filepath = self.output_dir.join("fields.csv");
         let mut fields_writer = Writer::from_path(&filepath).context(FlattererCSVWriteSnafu {
             filepath: filepath.clone(),
         })?;
@@ -1183,8 +1175,8 @@ impl FlatFiles {
 
     pub fn write_csvs(&mut self) -> Result<()> {
         info!("Writing final CSV files");
-        let tmp_path = self.output_path.join("tmp");
-        let csv_path = self.output_path.join("csv");
+        let tmp_path = self.output_dir.join("tmp");
+        let csv_path = self.output_dir.join("csv");
 
         for (table_name, table_title) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap(); //key known
@@ -1202,7 +1194,7 @@ impl FlatFiles {
                 })?;
 
             let filepath = csv_path.join(format!("{}.csv", table_title));
-            let row_count = if self.preview == 0 {metadata.rows} else {std::cmp::min(self.preview, metadata.rows)};
+            let row_count = if self.options.preview == 0 {metadata.rows} else {std::cmp::min(self.options.preview, metadata.rows)};
             info!(
                 "    Writing {} row(s) to {}.csv",
                 row_count, table_title
@@ -1235,7 +1227,7 @@ impl FlatFiles {
             let mut output_row = ByteRecord::new();
 
             for (num, row) in csv_reader.into_byte_records().enumerate() {
-                if self.preview != 0 && num == self.preview {
+                if self.options.preview != 0 && num == self.options.preview {
                     break;
                 }
                 let this_row = row.context(FlattererCSVWriteSnafu {
@@ -1268,10 +1260,10 @@ impl FlatFiles {
 
     pub fn write_xlsx(&mut self) -> Result<()> {
         info!("Writing final XLSX file");
-        let tmp_path = self.output_path.join("tmp");
+        let tmp_path = self.output_dir.join("tmp");
 
         let workbook = Workbook::new_with_options(
-            &self.output_path.join("output.xlsx").to_string_lossy(),
+            &self.output_dir.join("output.xlsx").to_string_lossy(),
             true,
             Some(&tmp_path.to_string_lossy()),
             false,
@@ -1302,12 +1294,12 @@ impl FlatFiles {
             if table_name != table_title {
                 new_table_title.truncate(31);
             } else {
-                new_table_title = truncate_xlsx_title(new_table_title, &self.path_separator);
+                new_table_title = truncate_xlsx_title(new_table_title, &self.options.path_separator);
             }
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
             };
-            let row_count = if self.preview == 0 {metadata.rows} else {std::cmp::min(self.preview, metadata.rows)};
+            let row_count = if self.options.preview == 0 {metadata.rows} else {std::cmp::min(self.options.preview, metadata.rows)};
             info!(
                 "    Writing {} row(s) to sheet `{}`",
                 row_count, new_table_title
@@ -1346,7 +1338,7 @@ impl FlatFiles {
             }
 
             for (row_num, row) in csv_reader.into_records().enumerate() {
-                if self.preview != 0 && row_num == self.preview {
+                if self.options.preview != 0 && row_num == self.options.preview {
                     break;
                 }
                 col_index = 0;
@@ -1411,7 +1403,7 @@ impl FlatFiles {
     }
 
     pub fn write_postgresql(&mut self) -> Result<()> {
-        let postgresql_dir_path = self.output_path.join("postgresql");
+        let postgresql_dir_path = self.output_dir.join("postgresql");
         create_dir_all(&postgresql_dir_path).context(FlattererCreateDirSnafu {
             filename: postgresql_dir_path.to_string_lossy(),
         })?;
@@ -1475,7 +1467,7 @@ impl FlatFiles {
     }
 
     pub fn write_sqlite(&mut self) -> Result<()> {
-        let sqlite_dir_path = self.output_path.join("sqlite");
+        let sqlite_dir_path = self.output_dir.join("sqlite");
         create_dir_all(&sqlite_dir_path).context(FlattererCreateDirSnafu {
             filename: sqlite_dir_path.to_string_lossy(),
         })?;
@@ -1544,11 +1536,11 @@ impl FlatFiles {
 
     pub fn write_sqlite_db(&mut self) -> Result<()> {
         info!("Writing SQLite file");
-        let mut sqlite_dir_path = self.output_path.join("sqlite.db");
-        if !self.sqlite_path.is_empty() {
-            sqlite_dir_path = PathBuf::from(&self.sqlite_path);
+        let mut sqlite_dir_path = self.output_dir.join("sqlite.db");
+        if !self.options.sqlite_path.is_empty() {
+            sqlite_dir_path = PathBuf::from(&self.options.sqlite_path);
         }
-        let tmp_path = self.output_path.join("tmp");
+        let tmp_path = self.output_dir.join("tmp");
 
         let mut conn = Connection::open(sqlite_dir_path).context(RusqliteSnafu {})?;
 
@@ -1577,7 +1569,7 @@ impl FlatFiles {
             if metadata.rows == 0 || metadata.ignore {
                 continue;
             }
-            let row_count = if self.preview == 0 {metadata.rows} else {std::cmp::min(self.preview, metadata.rows)};
+            let row_count = if self.options.preview == 0 {metadata.rows} else {std::cmp::min(self.options.preview, metadata.rows)};
             info!(
                 "    Writing {} row(s) to table `{}`",
                 row_count, table_title
@@ -1651,7 +1643,7 @@ impl FlatFiles {
                 };
 
                 for (num, row) in csv_reader.into_deserialize().enumerate() {
-                    if self.preview != 0 && num == self.preview {
+                    if self.options.preview != 0 && num == self.options.preview {
                         break;
                     }
                     let this_row: Vec<String> = row.context(FlattererCSVReadSnafu {
@@ -1771,18 +1763,20 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
 
 pub fn flatten<R: Read>(
     mut input: BufReader<R>,
-    mut flat_files: FlatFiles,
-    path: Vec<String>,
-    json_stream: bool,
+    output: String,
+    options: Options,
 ) -> Result<FlatFiles> {
     let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
     let (stop_sender, stop_receiver) = bounded(1);
     info!("Reading JSON input file and saving output into temporary CSV files");
 
-    let output_path = flat_files.output_path.clone();
+    let mut flat_files = FlatFiles::new(output, options.clone())?;
+
+    let output_path = flat_files.output_dir.clone();
+    let options_clone = options.clone();
 
     let thread = thread::spawn(move || -> Result<FlatFiles> {
-        let smart_path = path
+        let smart_path = options_clone.path 
             .iter()
             .map(|item| SmartString::from(item))
             .collect_vec();
@@ -1798,7 +1792,7 @@ pub fn flatten<R: Read>(
                     ),
                 });
             }
-            if !path.is_empty() && item.path != smart_path {
+            if !options_clone.path.is_empty() && item.path != smart_path {
                 continue;
             }
             let mut initial_path = vec![];
@@ -1844,7 +1838,7 @@ pub fn flatten<R: Read>(
         let mut handler = yajlparser::ParseJson::new(
             &mut outer,
             item_sender.clone(),
-            json_stream,
+            options.json_stream,
             500 * 1024 * 1024,
         );
 
@@ -1891,7 +1885,7 @@ pub fn flatten<R: Read>(
         }
     }
 
-    if top_level_type == "object" && !json_stream {
+    if top_level_type == "object" && !options.json_stream {
         let item = Item {
             json: std::str::from_utf8(&outer)
                 .expect("utf8 should be checked by yajl")
@@ -1928,53 +1922,56 @@ mod tests {
         let mut name = file.split("/").last().unwrap().to_string();
         let output_dir = tmp_dir.path().join("output");
         let output_path = output_dir.to_string_lossy().into_owned();
-        let mut flat_files = FlatFiles::new_with_defaults(output_path.clone()).unwrap();
-        let mut path = vec![];
+
+        let mut flatten_options = Options::builder().build();
+
+        flatten_options.csv = true;
+        flatten_options.xlsx = true;
+        flatten_options.sqlite = true;
+        flatten_options.parquet = true;
+
 
         if let Some(inline) = options["inline"].as_bool() {
-            flat_files.inline_one_to_one = inline;
+            flatten_options.inline_one_to_one = inline;
             name.push_str("-inline")
         }
 
-        flat_files.csv = true;
-        flat_files.xlsx = true;
-        flat_files.sqlite = true;
-        flat_files.parquet = true;
 
         if let Some(id_prefix) = options["id_prefix"].as_str() {
-            flat_files.id_prefix = id_prefix.into();
+            flatten_options.id_prefix = id_prefix.into();
             name.push_str("-id_prefix")
         }
 
         if let Some(tables_csv) = options["tables_csv"].as_str() {
+            flatten_options.tables_csv = tables_csv.into();
+
             let tables_only = options["tables_only"].as_bool().unwrap();
+            flatten_options.only_tables = tables_only;
             name.push_str("-tablescsv");
             if tables_only {
                 name.push_str("-tablesonly")
             }
-
-            flat_files
-                .use_tables_csv(tables_csv.to_string(), tables_only)
-                .unwrap();
         }
+
         if let Some(path_values) = options["path"].as_array() {
-            path = path_values
+            let path = path_values
                 .iter()
                 .map(|item| item.as_str().unwrap().to_string())
                 .collect();
 
-            name.push_str("-withpath")
+            name.push_str("-withpath");
+            flatten_options.path = path;
         }
+
+        flatten_options.json_stream = if file.ends_with(".json") { false } else { true };
+
 
         let result;
 
-        let stream = if file.ends_with(".json") { false } else { true };
-
         result = flatten(
             BufReader::new(File::open(file).unwrap()),
-            flat_files,
-            path,
-            stream,
+            output_path.clone(),
+            flatten_options,
         );
 
         if let Err(error) = result {
@@ -2247,21 +2244,10 @@ mod tests {
 
         let tmp_dir = TempDir::new().unwrap();
 
-        let mut flat_files = FlatFiles::new(
+
+
+        let mut flat_files = FlatFiles::new_with_defaults(
             tmp_dir.path().join("output").to_string_lossy().into_owned(),
-            true,
-            true,
-            true,
-            true,
-            true,
-            "main".to_string(),
-            vec![],
-            false,
-            "".to_string(),
-            "".to_string(),
-            "_".to_string(),
-            "".to_string(),
-            "".to_string(),
         )
         .unwrap();
 
@@ -2304,23 +2290,12 @@ mod tests {
 
         let tmp_dir = TempDir::new().unwrap();
 
-        let mut flat_files = FlatFiles::new(
+        let mut flat_files = FlatFiles::new_with_defaults(
             tmp_dir.path().join("output").to_string_lossy().into_owned(),
-            true,
-            true,
-            true,
-            true,
-            true,
-            "main".to_string(),
-            vec![],
-            true,
-            "".to_string(),
-            "".to_string(),
-            "_".to_string(),
-            "".to_string(),
-            "".to_string(),
         )
         .unwrap();
+
+        flat_files.options.inline_one_to_one = true;
 
         flat_files.process_value(json1, vec![]);
         flat_files.process_value(json2, vec![]);
@@ -2344,23 +2319,12 @@ mod tests {
         });
 
         let tmp_dir = TempDir::new().unwrap();
-        let mut flat_files = FlatFiles::new(
+        let mut flat_files = FlatFiles::new_with_defaults(
             tmp_dir.path().join("output").to_string_lossy().into_owned(),
-            true,
-            true,
-            true,
-            true,
-            true,
-            "main".to_string(),
-            vec![],
-            true,
-            "".to_string(),
-            "".to_string(),
-            "_".to_string(),
-            "".to_string(),
-            "".to_string(),
         )
         .unwrap();
+
+        flat_files.options.inline_one_to_one = true;
 
         flat_files.process_value(json1, vec![]);
         flat_files.process_value(json2, vec![]);

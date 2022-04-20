@@ -35,3 +35,8 @@ typed-builder = "0.10.0"
 
 [dev-dependencies]
 insta = {version = "1.12.0", features = ["redactions"]}
+criterion = "0.3"
+
+[[bench]]
+name = "weather"
+harness = false
