@@ -211,7 +211,11 @@ pub struct Options {
     #[builder(default)]
     pub tables_csv: String,
     #[builder(default)]
-    pub fields_csv: String
+    pub fields_csv: String,
+    #[builder(default)]
+    pub threads: usize,
+    #[builder(default)]
+    pub part: usize
 }
 
 #[derive(Debug)]
@@ -1761,6 +1765,29 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     new_parts.join(seperator)
 }
 
+pub fn flatten_multi<R: Read>(
+    mut input: BufReader<R>,
+    output: String,
+    options: Options,
+) -> Result<FlatFiles> {
+    let output_path = PathBuf::from(output.clone());
+    if output_path.is_dir() {
+        if options.force {
+            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
+                filename: output_path.to_string_lossy(),
+            })?;
+        } else {
+            return Err(Error::FlattererDirExists { dir: output_path });
+        }
+    }
+
+    let tmp_path = output_path.join("parts");
+    create_dir_all(&tmp_path).context(FlattererCreateDirSnafu {
+        filename: tmp_path.to_string_lossy(),
+    })?;
+
+}
+
 pub fn flatten<R: Read>(
     mut input: BufReader<R>,
     output: String,
@@ -1781,7 +1808,13 @@ pub fn flatten<R: Read>(
             .map(|item| SmartString::from(item))
             .collect_vec();
         let mut count = 0;
-        for item in item_receiver.iter() {
+        for (num, item) in item_receiver.iter().enumerate() {
+            if options_clone.threads > 0 {
+                if num % options.threads != options_clone.part {
+                    continue
+                }
+            }
+
             let value: Value = serde_json::from_str(&item.json).context(SerdeReadSnafu {})?;
 
             if !value.is_object() {
