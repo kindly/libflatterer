@@ -1,8 +1,8 @@
+use indexmap::IndexMap as HashMap;
 use jsonref::JsonRef;
 use serde_json::Value;
 use slug::slugify;
-use indexmap::IndexMap as HashMap;
-use snafu::{Snafu, ResultExt};
+use snafu::{ResultExt, Snafu};
 
 #[non_exhaustive]
 #[derive(Debug, Snafu)]
@@ -11,7 +11,7 @@ pub enum Error {
     FlattererJSONRefError {
         schema: String,
         source: jsonref::Error,
-    }
+    },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -43,9 +43,17 @@ impl SchemaAnalysis {
         jsonref.set_reference_key("___ref___");
         let value: Value;
         if self.schema.starts_with("http") {
-            value = jsonref.deref_url(&self.schema).context(FlattererJSONRefSnafu {schema: &self.schema})?;
+            value = jsonref
+                .deref_url(&self.schema)
+                .context(FlattererJSONRefSnafu {
+                    schema: &self.schema,
+                })?;
         } else {
-            value = jsonref.deref_file(&self.schema).context(FlattererJSONRefSnafu {schema: &self.schema})?;
+            value = jsonref
+                .deref_file(&self.schema)
+                .context(FlattererJSONRefSnafu {
+                    schema: &self.schema,
+                })?;
         }
 
         self.parse_value(value);
@@ -123,7 +131,6 @@ mod tests {
                 "".to_string(),
                 ).unwrap().field_order_map
             )
-
     }
 
     #[test]
@@ -139,7 +146,6 @@ mod tests {
 
     #[test]
     fn test_slug() {
-
         insta::assert_yaml_snapshot!(
             schema_analysis(
                 "https://gist.githubusercontent.com/kindly/91e09f88ced65aaca1a15d85a56a28f9/raw/52f8477435cff0b73c54aacc70926c101ce6c685/base.json",
