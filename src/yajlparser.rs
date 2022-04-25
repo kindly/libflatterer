@@ -30,7 +30,7 @@ impl<W: std::io::Write> ParseJson<W> {
         limit: usize,
     ) -> ParseJson<W> {
         let bufwriter = std::io::BufWriter::new(top_level_writer);
-        return ParseJson {
+        ParseJson {
             top_level_type: "".to_string(),
             in_stream: stream,
             stream_start_open_braces: 0,
@@ -41,7 +41,7 @@ impl<W: std::io::Write> ParseJson<W> {
             top_level_writer: bufwriter,
             error: "".to_string(),
             limit,
-        };
+        }
     }
     fn push(&mut self, val: &str) {
         if self.in_stream {
@@ -69,13 +69,13 @@ impl<W: std::io::Write> ParseJson<W> {
         }
     }
     fn send(&mut self, item: Item) -> Status {
-        return match self.sender.send(item) {
+        match self.sender.send(item) {
             Ok(_) => Status::Continue,
             Err(error) => {
                 self.error = error.to_string();
                 Status::Abort
             }
-        };
+        }
     }
 
     fn send_json(&mut self, _ctx: &Context) -> Status {
@@ -155,12 +155,10 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
             self.top_level_type = "object".to_string();
         }
         if let Some(enclosing) = _ctx.last_enclosing() {
-            if !self.in_stream && enclosing == Enclosing::LeftBracket {
-                if _ctx.parser_status() == yajlish::ParserStatus::ArrayStart {
-                    self.in_stream = true;
-                    self.stream_start_open_braces = _ctx.num_open_braces();
-                    self.stream_start_open_brackets = _ctx.num_open_brackets();
-                }
+            if !self.in_stream && enclosing == Enclosing::LeftBracket && _ctx.parser_status() == yajlish::ParserStatus::ArrayStart {
+                self.in_stream = true;
+                self.stream_start_open_braces = _ctx.num_open_braces();
+                self.stream_start_open_brackets = _ctx.num_open_brackets();
             }
         }
         self.push_array_comma(_ctx);

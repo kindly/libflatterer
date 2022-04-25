@@ -94,7 +94,7 @@ impl SchemaAnalysis {
                         }
 
                         let title_to_use = match self.title_tactic.as_str() {
-                            "underscore_slug" => slugify(title).replace("-", "_"),
+                            "underscore_slug" => slugify(title).replace('-', "_"),
                             "slug" => slugify(title),
                             _ => title.to_owned(),
                         };

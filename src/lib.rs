@@ -1039,7 +1039,7 @@ impl FlatFiles {
                 .delete_input_csv(!self.options.csv)
                 .build();
             datapackage_to_parquet_with_options(
-                self.output_dir.join("parquet").clone(),
+                self.output_dir.join("parquet"),
                 self.output_dir.to_string_lossy().into(),
                 options,
             )
@@ -1083,7 +1083,7 @@ impl FlatFiles {
                 let data_type = match metadata.field_type[order].as_str() {
                     "text" => "string",
                     "date" => "datetime",
-                    rest => &rest,
+                    rest => rest,
                 };
 
                 let field_name = &metadata.fields[order];
@@ -1116,7 +1116,7 @@ impl FlatFiles {
                     "primaryKey": "_link",
                 }
             });
-            if foreign_keys.len() > 0 {
+            if !foreign_keys.is_empty() {
                 resource["schema"]
                     .as_object_mut()
                     .unwrap()
@@ -1605,7 +1605,7 @@ impl FlatFiles {
             .filter(|table| table != &self.main_table_name)
             .collect_vec();
 
-        new_table_order.sort_by(|a, b| a.len().cmp(&b.len()));
+        new_table_order.sort_by_key(|a| a.len());
 
         new_table_order.insert(0, self.main_table_name.clone());
 
@@ -1876,7 +1876,7 @@ fn write_metadata_csvs_from_datapackage(output_dir: PathBuf) -> Result<()> {
             let field_type = match field_value["type"].as_str().unwrap() {
                 "string" => "text",
                 "datetime" => "date",
-                rest => &rest,
+                rest => rest,
             };
 
             fields_writer
@@ -1905,7 +1905,7 @@ pub fn flatten<R: Read>(
         options.threads = num_cpus::get()
     }
 
-    let final_output_path = PathBuf::from(output.clone());
+    let final_output_path = PathBuf::from(output);
     let parts_path = final_output_path.join("parts");
 
     if options.threads > 1 {
@@ -1947,7 +1947,7 @@ pub fn flatten<R: Read>(
         let mut output_path = final_output_path.clone();
 
         if options.threads > 1 {
-            options_clone.id_prefix = format!("{}.{}", index.to_string(), options_clone.id_prefix);
+            options_clone.id_prefix = format!("{}.{}", index, options_clone.id_prefix);
             options_clone.csv = true;
             options_clone.sqlite = false;
             options_clone.parquet = false;
@@ -1965,7 +1965,7 @@ pub fn flatten<R: Read>(
             let smart_path = options_clone
                 .path
                 .iter()
-                .map(|item| SmartString::from(item))
+                .map(SmartString::from)
                 .collect_vec();
             let mut count = 0;
             for item in item_receiver.iter() {
@@ -2169,7 +2169,7 @@ mod tests {
 
     fn test_output(file: &str, output: Vec<&str>, options: Value) {
         let tmp_dir = TempDir::new().unwrap();
-        let mut name = file.split("/").last().unwrap().to_string();
+        let mut name = file.split('/').last().unwrap().to_string();
         let output_dir = tmp_dir.path().join("output");
         let output_path = output_dir.to_string_lossy().into_owned();
 
@@ -2219,11 +2219,11 @@ mod tests {
             flatten_options.path = path;
         }
 
-        flatten_options.json_stream = if file.ends_with(".json") { false } else { true };
+        flatten_options.json_stream = !file.ends_with(".json");
 
-        let result;
+        
 
-        result = flatten(
+        let result = flatten(
             BufReader::new(File::open(file).unwrap()),
             output_path.clone(),
             flatten_options,
@@ -2231,7 +2231,7 @@ mod tests {
 
         if let Err(error) = result {
             if let Some(error_text) = options["error_text"].as_str() {
-                println!("{}", error.to_string());
+                println!("{}", error);
                 assert!(error.to_string().contains(error_text))
             } else {
                 panic!(
@@ -2242,7 +2242,7 @@ mod tests {
             assert!(!output_dir.exists());
             return;
         }
-        let mut output_tmp_dir = output_dir.clone();
+        let mut output_tmp_dir = output_dir;
         output_tmp_dir.push("tmp");
         assert!(!output_tmp_dir.exists());
 

@@ -21,13 +21,13 @@ pub struct GuessArray {
 
 impl GuessArray {
     fn new() -> GuessArray {
-        return GuessArray {
+        GuessArray {
             guess: "".to_string(),
             path_guess: "".to_string(),
             new: true,
             new_array: false,
             keys: vec![],
-        };
+        }
     }
 }
 
@@ -84,16 +84,14 @@ impl Handler for GuessArray {
     }
 
     fn handle_start_map(&mut self, _ctx: &Context) -> Status {
-        if self.new == false && self.keys.len() == 0 {
+        if !self.new && self.keys.is_empty() {
             self.guess = "stream".to_string();
             return Status::Abort;
         }
-        if self.new_array {
-            if self.path_guess.is_empty() {
-                let path_guess: Vec<String> =
-                    self.keys.iter().filter_map(|i| i.to_owned()).collect();
-                self.path_guess = path_guess.join("/");
-            }
+        if self.new_array && self.path_guess.is_empty() {
+            let path_guess: Vec<String> =
+                self.keys.iter().filter_map(|i| i.to_owned()).collect();
+            self.path_guess = path_guess.join("/");
         }
         self.new = false;
         self.new_array = false;
@@ -143,7 +141,7 @@ pub fn guess_array(json: &str) -> Result<(String, String)> {
         path_guess = "".to_string();
     }
 
-    return Ok((guess, path_guess));
+    Ok((guess, path_guess))
 }
 
 #[cfg(test)]
