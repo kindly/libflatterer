@@ -11,7 +11,7 @@ homepage = "https://github.com/kindly/libflatterer"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-yajlish = { version = "0.4.0" } 
+yajlish = { path = "../yajlish" } 
 serde_json = { version = "1", features = ["preserve_order"] }
 tempfile = "3"
 itertools = "0.10"
@@ -31,12 +31,8 @@ lazy_static = "1"
 rusqlite = {version = "0.27.0", features = ["bundled"] }
 datapackage_convert = "0.3.0"
 typed-builder = "0.10.0"
+num_cpus = "1.13.1"
 
 
 [dev-dependencies]
 insta = {version = "1.12.0", features = ["redactions"]}
-criterion = "0.3"
-
-[[bench]]
-name = "weather"
-harness = false

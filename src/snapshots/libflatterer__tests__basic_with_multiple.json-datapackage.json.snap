@@ -1,6 +1,6 @@
 ---
 source: src/lib.rs
-assertion_line: 1965
+assertion_line: 2209
 expression: "&value"
 
 ---
@@ -8,21 +8,28 @@ profile: tabular-data-package
 resources:
   - profile: tabular-data-resource
     name: games
+    flatterer_name: games
+    title: games
     schema:
       fields:
         - name: _link
+          title: _link
           type: string
           count: 2
         - name: _link_main
+          title: _link_main
           type: string
           count: 2
         - name: id
+          title: id
           type: number
           count: 2
         - name: rating_code
+          title: rating_code
           type: string
           count: 2
         - name: rating_name
+          title: rating_name
           type: string
           count: 2
       primaryKey: _link
@@ -34,18 +41,24 @@ resources:
     path: csv/games.csv
   - profile: tabular-data-resource
     name: games_platforms
+    flatterer_name: games_platforms
+    title: games_platforms
     schema:
       fields:
         - name: _link
+          title: _link
           type: string
           count: 3
         - name: _link_games
+          title: _link_games
           type: string
           count: 3
         - name: _link_main
+          title: _link_main
           type: string
           count: 3
         - name: name
+          title: name
           type: string
           count: 3
       primaryKey: _link
@@ -61,21 +74,28 @@ resources:
     path: csv/games_platforms.csv
   - profile: tabular-data-resource
     name: moregames
+    flatterer_name: moreGames
+    title: moreGames
     schema:
       fields:
         - name: _link
+          title: _link
           type: string
           count: 2
         - name: _link_main
+          title: _link_main
           type: string
           count: 2
         - name: id
+          title: id
           type: number
           count: 2
         - name: rating_code
+          title: rating_code
           type: string
           count: 2
         - name: rating_name
+          title: rating_name
           type: string
           count: 2
       primaryKey: _link
@@ -87,18 +107,24 @@ resources:
     path: csv/moreGames.csv
   - profile: tabular-data-resource
     name: moregames_platforms
+    flatterer_name: moreGames_platforms
+    title: moreGames_platforms
     schema:
       fields:
         - name: _link
+          title: _link
           type: string
           count: 3
         - name: _link_moreGames
+          title: _link_moreGames
           type: string
           count: 3
         - name: _link_main
+          title: _link_main
           type: string
           count: 3
         - name: name
+          title: name
           type: string
           count: 3
       primaryKey: _link
@@ -114,15 +140,18 @@ resources:
     path: csv/moreGames_platforms.csv
   - profile: tabular-data-resource
     name: main
+    flatterer_name: main
+    title: main
     schema:
       fields:
         - name: _link
+          title: _link
           type: string
           count: 1
         - name: date
+          title: date
           type: datetime
           count: 1
       primaryKey: _link
-      foreignKeys: []
     path: csv/main.csv
 

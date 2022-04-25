@@ -31,12 +31,12 @@ use indexmap::IndexSet as Set;
 use std::convert::TryInto;
 use std::fmt;
 use std::fs::{create_dir_all, remove_dir_all, File};
-use std::io::{self, BufReader, Read, Write};
+use std::io::{self, BufReader, Read, Write, BufRead};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{panic, thread};
 
-use datapackage_convert;
+use datapackage_convert::{datapackage_to_parquet_with_options, merge_datapackage_with_options, datapackage_to_sqlite_with_options};
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 pub use guess_array::guess_array;
@@ -104,6 +104,12 @@ pub enum Error {
         source: csv::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Error reading file {}", filepath.to_string_lossy()))]
+    FlattererReadError {
+        filepath: PathBuf,
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Error reading CSV file {}", filepath))]
     FlattererCSVReadError {
         filepath: String,
@@ -120,6 +126,11 @@ pub enum Error {
     SerdeWriteError {
         filename: String,
         source: serde_json::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{}", source))]
+    DatapackageConvertError {
+        source: datapackage_convert::Error,
         backtrace: Backtrace,
     },
     #[snafu(display("Invalid JSON due to the following error: {}", source))]
@@ -209,10 +220,12 @@ pub struct Options {
     #[builder(default)]
     pub json_stream: bool,
     #[builder(default)]
+    pub ndjson: bool,
+    #[builder(default)]
     pub tables_csv: String,
     #[builder(default)]
     pub fields_csv: String,
-    #[builder(default)]
+    #[builder(default = 1)]
     pub threads: usize,
     #[builder(default)]
     pub part: usize
@@ -991,11 +1004,12 @@ impl FlatFiles {
             }
         }
 
+        self.write_data_package()?;
+
         if self.options.csv || self.options.parquet {
             self.write_csvs()?;
             self.write_postgresql()?;
             self.write_sqlite()?;
-            self.write_data_package()?;
         };
 
         if self.options.xlsx {
@@ -1009,11 +1023,11 @@ impl FlatFiles {
         if self.options.parquet {
             log::info!("Converting to parquet");
             let options = datapackage_convert::Options::builder().delete_input_csv(!self.options.csv).build();
-            datapackage_convert::datapackage_to_parquet_with_options(
+            datapackage_to_parquet_with_options(
                 self.output_dir.join("parquet").clone(),
                 self.output_dir.to_string_lossy().into(), 
                 options
-            ).unwrap();
+            ).context(DatapackageConvertSnafu {})?;
         };
 
         let tmp_path = self.output_dir.join("tmp");
@@ -1023,8 +1037,7 @@ impl FlatFiles {
         }
         info!("Writing metadata files");
 
-        self.write_fields_csv()?;
-        self.write_tables_csv()?;
+        write_metadata_csvs_from_datapackage(self.output_dir.clone())?;
 
         Ok(())
     }
@@ -1062,6 +1075,7 @@ impl FlatFiles {
 
                 let field = json!({
                     "name": field_name,
+                    "title": field_title,
                     "type": data_type,
                     "count": metadata.field_counts[order],
                 });
@@ -1079,13 +1093,17 @@ impl FlatFiles {
 
             let mut resource = json!({
                 "profile": "tabular-data-resource",
-                "name": table_title.to_lowercase(),
+                "name": table_name.to_lowercase(),
+                "flatterer_name": table_name,
+                "title": table_title,
                 "schema": {
                     "fields": fields,
                     "primaryKey": "_link",
-                    "foreignKeys": foreign_keys
                 }
             });
+            if foreign_keys.len() > 0 {
+                resource["schema"].as_object_mut().unwrap().insert("foreignKeys".into(),foreign_keys.into());
+            }
             if self.options.csv {
                 resource.as_object_mut().unwrap().insert(
                     "path".to_string(),
@@ -1132,6 +1150,7 @@ impl FlatFiles {
 
         Ok(())
     }
+
 
     pub fn write_fields_csv(&mut self) -> Result<()> {
         let filepath = self.output_dir.join("fields.csv");
@@ -1765,184 +1784,329 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     new_parts.join(seperator)
 }
 
-pub fn flatten_multi<R: Read>(
-    mut input: BufReader<R>,
-    output: String,
-    options: Options,
-) -> Result<()> {
-    let output_path = PathBuf::from(output.clone());
-    if output_path.is_dir() {
-        if options.force {
-            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                filename: output_path.to_string_lossy(),
-            })?;
-        } else {
-            return Err(Error::FlattererDirExists { dir: output_path });
-        }
-    }
 
-    let tmp_path = output_path.join("parts");
-    create_dir_all(&tmp_path).context(FlattererCreateDirSnafu {
-        filename: tmp_path.to_string_lossy(),
+fn write_metadata_csvs_from_datapackage(output_dir: PathBuf) -> Result<()> {
+
+    let datapackage_path = output_dir.join("datapackage.json");
+
+    let fields_filepath = output_dir.join("fields.csv");
+    let mut fields_writer = Writer::from_path(&fields_filepath).context(FlattererCSVWriteSnafu {
+        filepath: fields_filepath.clone(),
     })?;
+
+    let tables_filepath = output_dir.join("tables.csv");
+    let mut tables_writer = Writer::from_path(&tables_filepath).context(FlattererCSVWriteSnafu {
+        filepath: tables_filepath.clone(),
+    })?;
+
+    let file = File::open(&datapackage_path).context(FlattererReadSnafu {filepath: &datapackage_path})?;
+    let json: Value =
+        serde_json::from_reader(BufReader::new(file)).context(SerdeReadSnafu {})?;
+    
+    let resources = json["resources"].as_array().unwrap();
+
+    fields_writer
+        .write_record([
+            "table_name",
+            "field_name",
+            "field_type",
+            "field_title",
+            "count",
+        ])
+        .context(FlattererCSVWriteSnafu {
+            filepath: fields_filepath.clone(),
+        })?;
+
+    tables_writer
+        .write_record(["table_name", "table_title"])
+        .context(FlattererCSVWriteSnafu {
+            filepath: tables_filepath.clone(),
+        })?;
+
+    for resource in resources {
+        tables_writer
+            .write_record([
+                resource["flatterer_name"].as_str().unwrap(),
+                resource["title"].as_str().unwrap(),
+            ])
+            .context(FlattererCSVWriteSnafu {
+                filepath: tables_filepath.clone(),
+            })?;
+        for field_value in resource["schema"]["fields"].as_array().unwrap() {
+            let field_type = match field_value["type"].as_str().unwrap() {
+                "string" => "text",
+                "datetime" => "date",
+                rest => &rest
+            };
+
+            fields_writer
+                .write_record([
+                    resource["flatterer_name"].as_str().unwrap(),
+                    field_value["name"].as_str().unwrap(),
+                    field_type,
+                    field_value["title"].as_str().unwrap(),
+                    &field_value["count"].as_i64().unwrap().to_string()
+                ])
+                .context(FlattererCSVWriteSnafu {
+                    filepath: fields_filepath.clone(),
+                })?;
+        }
+    };
+
+
     Ok(())
 }
+
 
 pub fn flatten<R: Read>(
     mut input: BufReader<R>,
     output: String,
-    options: Options,
-) -> Result<FlatFiles> {
-    let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
-    let (stop_sender, stop_receiver) = bounded(1);
-    info!("Reading JSON input file and saving output into temporary CSV files");
+    mut options: Options,
+) -> Result<()> {
+    if options.threads == 0 {
+        options.threads = num_cpus::get()
+    }
 
-    let mut flat_files = FlatFiles::new(output, options.clone())?;
+    let final_output_path = PathBuf::from(output.clone());
+    let parts_path = final_output_path.join("parts");
 
-    let output_path = flat_files.output_dir.clone();
-    let options_clone = options.clone();
+    if options.threads > 1 {
+        if options.xlsx {
+            warn!("XLSX output not supported in multi threaded mode");
+            options.xlsx = false;
+        }
+        if final_output_path.is_dir() {
+            if options.force {
+                remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
+                    filename: final_output_path.to_string_lossy(),
+                })?;
+            } else {
+                return Err(Error::FlattererDirExists { dir: final_output_path });
+            }
+        }
 
-    let thread = thread::spawn(move || -> Result<FlatFiles> {
-        let smart_path = options_clone.path 
-            .iter()
-            .map(|item| SmartString::from(item))
-            .collect_vec();
-        let mut count = 0;
-        for (num, item) in item_receiver.iter().enumerate() {
-            if options_clone.threads > 0 {
-                if num % options.threads != options_clone.part {
-                    continue
+        create_dir_all(&parts_path).context(FlattererCreateDirSnafu {
+            filename: parts_path.to_string_lossy(),
+        })?;
+    }
+
+
+    let mut output_paths = vec![];
+    let mut join_handlers = vec![];
+
+    let (item_sender, item_receiver_initial): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
+
+    let mut stop_senders = vec![];
+
+    for index in 0..options.threads {
+        let (stop_sender, stop_receiver) = bounded(1);
+        stop_senders.push(stop_sender);
+
+        let mut options_clone = options.clone();
+
+        let mut output_path = final_output_path.clone();
+
+        if options.threads > 1 {
+            options_clone.id_prefix = format!("{}.{}", index.to_string(), options_clone.id_prefix);
+            options_clone.csv = true;
+            options_clone.sqlite = false;
+            options_clone.parquet = false;
+            output_path = parts_path.join(index.to_string());
+        }
+        output_paths.push(output_path.clone().to_string_lossy().to_string());
+
+        let mut flat_files = FlatFiles::new(output_path.clone().to_string_lossy().to_string(), options_clone.clone())?;
+        let item_receiver = item_receiver_initial.clone();
+
+        let join_handler = thread::spawn(move || {
+            let smart_path = options_clone.path 
+                .iter()
+                .map(|item| SmartString::from(item))
+                .collect_vec();
+            let mut count = 0;
+            for item in item_receiver.iter() {
+                let value: Value = serde_json::from_str(&item.json).context(SerdeReadSnafu {})?;
+
+                if !value.is_object() {
+                    return Err(Error::FlattererProcessError {
+                        message: format!(
+                            "Value at array position {} is not an object: value is `{}`",
+                            count, value
+                        ),
+                    });
+                }
+                if !options_clone.path.is_empty() && item.path != smart_path {
+                    continue;
+                }
+                let mut initial_path = vec![];
+                if smart_path.is_empty() {
+                    initial_path = item.path.clone()
+                }
+
+                flat_files.process_value(value, initial_path);
+                flat_files.create_rows()?;
+                count += 1;
+                if count % 500000 == 0 {
+                    info!("Thread {} Processed {} values so far.", index, count);
+                    if TERMINATE.load(Ordering::SeqCst) {
+                        log::debug!("Terminating..");
+                        return Err(Error::Terminated {});
+                    };
+                    if stop_receiver.try_recv().is_ok() {
+                        return Ok(flat_files); // This is really an error but it should be handled by main thread.
+                    }
                 }
             }
 
-            let value: Value = serde_json::from_str(&item.json).context(SerdeReadSnafu {})?;
-
-            if !value.is_object() {
+            if count == 0 {
                 return Err(Error::FlattererProcessError {
-                    message: format!(
-                        "Value at array position {} is not an object: value is `{}`",
-                        count, value
-                    ),
+                    message: "The JSON provided as input is not an array of objects".to_string(),
                 });
             }
-            if !options_clone.path.is_empty() && item.path != smart_path {
-                continue;
+            if stop_receiver.try_recv().is_ok() {
+                return Ok(flat_files); // This is really an error but it should be handled by main thread.
             }
-            let mut initial_path = vec![];
-            if smart_path.is_empty() {
-                initial_path = item.path.clone()
-            }
-            flat_files.process_value(value, initial_path);
-            flat_files.create_rows()?;
-            count += 1;
-            if count % 500000 == 0 {
-                info!("Processed {} values so far.", count);
-                if TERMINATE.load(Ordering::SeqCst) {
-                    log::debug!("Terminating..");
-                    return Err(Error::Terminated {});
-                };
-                if stop_receiver.try_recv().is_ok() {
-                    return Ok(flat_files); // This is really an error but it should be handled by main thread.
-                }
-            }
-        }
+            if TERMINATE.load(Ordering::SeqCst) {
+                return Err(Error::Terminated {});
+            };
+            info!("Finished processing {} value(s)", count);
 
-        if count == 0 {
-            return Err(Error::FlattererProcessError {
-                message: "The JSON provided as input is not an array of objects".to_string(),
-            });
-        }
-        if stop_receiver.try_recv().is_ok() {
-            return Ok(flat_files); // This is really an error but it should be handled by main thread.
-        }
-        if TERMINATE.load(Ordering::SeqCst) {
-            return Err(Error::Terminated {});
-        };
-        info!("Finished processing {} value(s)", count);
+            flat_files.write_files()?;
+            Ok(flat_files)
+        });
+        join_handlers.push(join_handler);
+    }
+    drop(item_receiver_initial);
 
-        flat_files.write_files()?;
-        Ok(flat_files)
-    });
 
     let mut outer: Vec<u8> = vec![];
     let top_level_type;
 
-    {
-        let mut handler = yajlparser::ParseJson::new(
-            &mut outer,
-            item_sender.clone(),
-            options.json_stream,
-            500 * 1024 * 1024,
-        );
-
+    if options.ndjson {
+        for line in input.lines() {
+            item_sender.send(Item {json: line.context(FlattererReadSnafu {filepath: "input"})?, path: vec![]}).context(ChannelItemSnafu {})?;
+        }
+    } else {
         {
-            let mut parser = Parser::new(&mut handler);
+            let mut handler = yajlparser::ParseJson::new(
+                &mut outer,
+                item_sender.clone(),
+                options.json_stream,
+                500 * 1024 * 1024,
+            );
 
-            if let Err(error) = parser.parse(&mut input) {
-                log::debug!("Parse error, whilst in main parsing");
-                stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                    filename: output_path.to_string_lossy(),
-                })?;
-                return Err(Error::YAJLishParseError {
-                    error: format!("Invalid JSON due to the following error: {}", error),
-                });
-            }
-            if let Err(error) = parser.finish_parse() {
-                // never seems to reach parse complete on stream data
-                if !error
-                    .to_string()
-                    .contains("Did not reach a ParseComplete status")
-                {
-                    log::debug!("Parse error, whilst in cleaning up parsing");
-                    stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-                    remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                        filename: output_path.to_string_lossy(),
+            {
+                let mut parser = Parser::new(&mut handler);
+
+                if let Err(error) = parser.parse(&mut input) {
+                    log::debug!("Parse error, whilst in main parsing");
+                    for stop_sender in stop_senders {
+                        stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+                    }
+                    remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
+                        filename: final_output_path.to_string_lossy(),
                     })?;
                     return Err(Error::YAJLishParseError {
                         error: format!("Invalid JSON due to the following error: {}", error),
                     });
                 }
+                if let Err(error) = parser.finish_parse() {
+                    // never seems to reach parse complete on stream data
+                    if !error
+                        .to_string()
+                        .contains("Did not reach a ParseComplete status")
+                    {
+                        log::debug!("Parse error, whilst in cleaning up parsing");
+                        //stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+                        remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
+                            filename: final_output_path.to_string_lossy(),
+                        })?;
+                        return Err(Error::YAJLishParseError {
+                            error: format!("Invalid JSON due to the following error: {}", error),
+                        });
+                    }
+                }
+            }
+
+            top_level_type = handler.top_level_type.clone();
+
+            if !handler.error.is_empty() {
+                remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
+                    filename: final_output_path.to_string_lossy(),
+                })?;
+                return Err(Error::FlattererProcessError {
+                    message: handler.error,
+                });
             }
         }
 
-        top_level_type = handler.top_level_type.clone();
-
-        if !handler.error.is_empty() {
-            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                filename: output_path.to_string_lossy(),
-            })?;
-            return Err(Error::FlattererProcessError {
-                message: handler.error,
-            });
+        if top_level_type == "object" && !options.json_stream {
+            let item = Item {
+                json: std::str::from_utf8(&outer)
+                    .expect("utf8 should be checked by yajl")
+                    .to_string(),
+                path: vec![],
+            };
+            item_sender.send(item).context(ChannelItemSnafu {})?;
         }
     }
 
-    if top_level_type == "object" && !options.json_stream {
-        let item = Item {
-            json: std::str::from_utf8(&outer)
-                .expect("utf8 should be checked by yajl")
-                .to_string(),
-            path: vec![],
-        };
-        item_sender.send(item).context(ChannelItemSnafu {})?;
-    }
+
     drop(item_sender);
 
-    match thread.join() {
-        Ok(result) => {
-            if let Err(err) = result {
-                log::debug!("Error on thread join {}", err);
-                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                    filename: output_path.to_string_lossy(),
-                })?;
-                return Err(err);
+    for join_handler in join_handlers {
+        match join_handler.join() {
+            Ok(result) => {
+                if let Err(err) = result {
+                    log::debug!("Error on thread join {}", err);
+                    remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
+                        filename: final_output_path.to_string_lossy(),
+                    })?;
+                    return Err(err);
+                }
             }
-            Ok(result.unwrap())
+            Err(err) => panic::resume_unwind(err),
         }
-        Err(err) => panic::resume_unwind(err),
     }
+
+    if options.threads > 1 {
+        let op = datapackage_convert::Options::builder().delete_input_csv(true).build();
+        merge_datapackage_with_options(final_output_path.clone(), output_paths, op).context(DatapackageConvertSnafu {})?;
+
+        remove_dir_all(&parts_path).context(FlattererRemoveDirSnafu {
+            filename: parts_path.to_string_lossy(),
+        })?;
+
+        if options.parquet {
+            let op = datapackage_convert::Options::builder().build();
+            datapackage_to_parquet_with_options(
+                final_output_path.join("parquet"), 
+                final_output_path.to_string_lossy().into(), 
+                op).context(DatapackageConvertSnafu {})?;
+        }
+
+        if options.sqlite {
+            let op = datapackage_convert::Options::builder().build();
+            if options.sqlite_path.is_empty() {
+                options.sqlite_path = final_output_path.join("sqlite.db").to_string_lossy().into();
+            }
+            datapackage_to_sqlite_with_options(
+                options.sqlite_path, 
+                final_output_path.to_string_lossy().into(), 
+                op).context(DatapackageConvertSnafu {})?;
+        }
+
+        if !options.csv {
+            remove_dir_all(final_output_path.join("csv")).context(FlattererRemoveDirSnafu {
+                filename: final_output_path.to_string_lossy(),
+            })?;
+        }
+        write_metadata_csvs_from_datapackage(final_output_path)?;
+    }
+
+    Ok(())
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -1959,7 +2123,6 @@ mod tests {
         let mut flatten_options = Options::builder().build();
 
         flatten_options.csv = true;
-        flatten_options.xlsx = true;
         flatten_options.sqlite = true;
         flatten_options.parquet = true;
 
@@ -1969,6 +2132,14 @@ mod tests {
             name.push_str("-inline")
         }
 
+        if let Some(threads) = options["threads"].as_i64() {
+            flatten_options.threads = usize::try_from(threads).unwrap();
+            name.push_str("-threads")
+        }
+
+        if let Some(xlsx) = options["xlsx"].as_bool() {
+            flatten_options.xlsx = xlsx;
+        }
 
         if let Some(id_prefix) = options["id_prefix"].as_str() {
             flatten_options.id_prefix = id_prefix.into();
@@ -2397,5 +2568,28 @@ mod tests {
             let truncated_title = truncate_xlsx_title(case.0.to_string(), "_");
             assert_eq!(truncated_title, case.1);
         }
+    }
+
+    #[test]
+    fn test_multi() {
+        let options = Options::builder().json_stream(true).parquet(true).sqlite(true).threads(0).force(true).build();
+        
+        flatten(
+            BufReader::new(File::open("fixtures/daily_16.json").unwrap()), // reader
+            "/tmp/multi".into(), // output directory
+            options, 
+        ).unwrap();
+
+        let value: Value = serde_json::from_reader(
+            File::open("/tmp/multi/datapackage.json").unwrap(),
+        )
+        .unwrap();
+
+        insta::assert_yaml_snapshot!(&value);
+
+        assert_eq!(BufReader::new(File::open("/tmp/multi/csv/main.csv").unwrap()).lines().count(), 5000);
+        assert!(PathBuf::from("/tmp/multi/parquet/main.parquet").exists());
+        assert!(PathBuf::from("/tmp/multi/sqlite.db").exists());
+
     }
 }
