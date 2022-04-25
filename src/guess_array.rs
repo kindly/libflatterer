@@ -89,8 +89,7 @@ impl Handler for GuessArray {
             return Status::Abort;
         }
         if self.new_array && self.path_guess.is_empty() {
-            let path_guess: Vec<String> =
-                self.keys.iter().filter_map(|i| i.to_owned()).collect();
+            let path_guess: Vec<String> = self.keys.iter().filter_map(|i| i.to_owned()).collect();
             self.path_guess = path_guess.join("/");
         }
         self.new = false;

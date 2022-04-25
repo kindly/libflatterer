@@ -41,20 +41,19 @@ impl SchemaAnalysis {
     fn parse(&mut self) -> Result<()> {
         let mut jsonref = JsonRef::new();
         jsonref.set_reference_key("___ref___");
-        let value: Value;
-        if self.schema.starts_with("http") {
-            value = jsonref
+        let value = if self.schema.starts_with("http") {
+            jsonref
                 .deref_url(&self.schema)
                 .context(FlattererJSONRefSnafu {
                     schema: &self.schema,
-                })?;
+                })?
         } else {
-            value = jsonref
+            jsonref
                 .deref_file(&self.schema)
                 .context(FlattererJSONRefSnafu {
                     schema: &self.schema,
-                })?;
-        }
+                })?
+        };
 
         self.parse_value(value);
 

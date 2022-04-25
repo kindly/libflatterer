@@ -18,7 +18,7 @@
 //! flatten(
 //!    BufReader::new(File::open("fixtures/basic.json").unwrap()), // reader
 //!    output_dir.to_string_lossy().into(), // output directory
-//!    options, // output directory
+//!    options, // options
 //! ).unwrap();
 //!```
 mod guess_array;
@@ -60,6 +60,7 @@ use yajlparser::Item;
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
 }
+
 lazy_static::lazy_static! {
     #[allow(clippy::invalid_regex)]
     pub static ref INVALID_REGEX: regex::Regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
@@ -327,7 +328,7 @@ struct JLWriter {
 impl Write for JLWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf == [b'\n'] {
-            if let Err(_) = self.buf_sender.send((self.buf.clone(), false)) {
+            if self.buf_sender.send((self.buf.clone(), false)).is_err() {
                 log::error!(
                     "Unable to process any data, most likely caused by termination of worker"
                 );
@@ -1500,9 +1501,9 @@ impl FlatFiles {
 
             writeln!(
                 postgresql_load,
-                "\\copy \"{}\" from '{}' with CSV HEADER",
+                "\\copy \"{}\" from 'csv/{}.csv' with CSV HEADER",
                 table_title.to_lowercase(),
-                format!("csv/{}.csv", table_title),
+                table_title,
             )
             .context(FlattererFileWriteSnafu {
                 filename: "postgresql_load.sql",
@@ -1568,8 +1569,8 @@ impl FlatFiles {
 
             writeln!(
                 sqlite_load,
-                ".import '{}' {} --skip 1 ",
-                format!("csv/{}.csv", table_title),
+                ".import 'csv/{}.csv' {} --skip 1 ",
+                table_title,
                 table_title.to_lowercase()
             )
             .context(FlattererFileWriteSnafu {
@@ -2220,8 +2221,6 @@ mod tests {
         }
 
         flatten_options.json_stream = !file.ends_with(".json");
-
-        
 
         let result = flatten(
             BufReader::new(File::open(file).unwrap()),

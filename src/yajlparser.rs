@@ -155,7 +155,10 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
             self.top_level_type = "object".to_string();
         }
         if let Some(enclosing) = _ctx.last_enclosing() {
-            if !self.in_stream && enclosing == Enclosing::LeftBracket && _ctx.parser_status() == yajlish::ParserStatus::ArrayStart {
+            if !self.in_stream
+                && enclosing == Enclosing::LeftBracket
+                && _ctx.parser_status() == yajlish::ParserStatus::ArrayStart
+            {
                 self.in_stream = true;
                 self.stream_start_open_braces = _ctx.num_open_braces();
                 self.stream_start_open_brackets = _ctx.num_open_brackets();
