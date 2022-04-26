@@ -2634,25 +2634,27 @@ mod tests {
             .force(true)
             .build();
 
+        let tmp_dir = TempDir::new().unwrap();
+
         flatten(
             BufReader::new(File::open("fixtures/daily_16.json").unwrap()), // reader
-            "/tmp/multi".into(),                                           // output directory
+           tmp_dir.path().to_string_lossy().into(), // output directory
             options,
         )
         .unwrap();
 
         let value: Value =
-            serde_json::from_reader(File::open("/tmp/multi/datapackage.json").unwrap()).unwrap();
+            serde_json::from_reader(File::open(tmp_dir.path().join("datapackage.json")).unwrap()).unwrap();
 
         insta::assert_yaml_snapshot!(&value);
 
         assert_eq!(
-            BufReader::new(File::open("/tmp/multi/csv/main.csv").unwrap())
+            BufReader::new(File::open(tmp_dir.path().join("csv/main.csv")).unwrap())
                 .lines()
                 .count(),
             5000
         );
-        assert!(PathBuf::from("/tmp/multi/parquet/main.parquet").exists());
-        assert!(PathBuf::from("/tmp/multi/sqlite.db").exists());
+        assert!(PathBuf::from(tmp_dir.path().join("parquet/main.parquet")).exists());
+        assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
     }
 }
