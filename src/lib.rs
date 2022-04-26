@@ -232,7 +232,7 @@ pub struct Options {
     #[builder(default = 1)]
     pub threads: usize,
     #[builder(default)]
-    pub part: usize,
+    pub thread_name: String,
 }
 
 #[derive(Debug)]
@@ -1000,8 +1000,12 @@ impl FlatFiles {
         }
     }
 
+    fn log_info(&self, msg: &str) {
+        info!("{}{}", self.options.thread_name, msg)
+    }
+
     pub fn write_files(&mut self) -> Result<()> {
-        info!("Analyzing input data");
+        self.log_info("Analyzing input data");
         self.mark_ignore();
         self.determine_order();
         self.make_lower_case_titles();
@@ -1035,7 +1039,7 @@ impl FlatFiles {
         };
 
         if self.options.parquet {
-            log::info!("Converting to parquet");
+            self.log_info("Converting to parquet");
             let options = datapackage_convert::Options::builder()
                 .delete_input_csv(!self.options.csv)
                 .build();
@@ -1052,7 +1056,7 @@ impl FlatFiles {
         if remove_dir_all(&tmp_path).is_err() {
             log::warn!("Temp files can not be deleted, continuing anyway");
         }
-        info!("Writing metadata files");
+        self.log_info("Writing metadata files");
 
         write_metadata_csvs_from_datapackage(self.output_dir.clone())?;
 
@@ -1215,7 +1219,7 @@ impl FlatFiles {
     }
 
     pub fn write_csvs(&mut self) -> Result<()> {
-        info!("Writing final CSV files");
+        self.log_info("Writing final CSV files");
         let tmp_path = self.output_dir.join("tmp");
         let csv_path = self.output_dir.join("csv");
 
@@ -1240,7 +1244,7 @@ impl FlatFiles {
             } else {
                 std::cmp::min(self.options.preview, metadata.rows)
             };
-            info!("    Writing {} row(s) to {}.csv", row_count, table_title);
+            self.log_info(&format!("    Writing {} row(s) to {}.csv", row_count, table_title));
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
             };
@@ -1301,7 +1305,7 @@ impl FlatFiles {
     }
 
     pub fn write_xlsx(&mut self) -> Result<()> {
-        info!("Writing final XLSX file");
+        self.log_info("Writing final XLSX file");
         let tmp_path = self.output_dir.join("tmp");
 
         let workbook = Workbook::new_with_options(
@@ -1347,10 +1351,10 @@ impl FlatFiles {
             } else {
                 std::cmp::min(self.options.preview, metadata.rows)
             };
-            info!(
+            self.log_info(&format!(
                 "    Writing {} row(s) to sheet `{}`",
                 row_count, new_table_title
-            );
+            ));
 
             let mut worksheet = workbook
                 .add_worksheet(Some(&new_table_title))
@@ -1582,7 +1586,7 @@ impl FlatFiles {
     }
 
     pub fn write_sqlite_db(&mut self) -> Result<()> {
-        info!("Writing SQLite file");
+        self.log_info("Writing SQLite file");
         let mut sqlite_dir_path = self.output_dir.join("sqlite.db");
         if !self.options.sqlite_path.is_empty() {
             sqlite_dir_path = PathBuf::from(&self.options.sqlite_path);
@@ -1622,10 +1626,10 @@ impl FlatFiles {
             } else {
                 std::cmp::min(self.options.preview, metadata.rows)
             };
-            info!(
+            self.log_info(&format!(
                 "    Writing {} row(s) to table `{}`",
                 row_count, table_title
-            );
+            ));
             let table_order = metadata.order.clone();
             let mut create_table_sql = String::new();
             create_table_sql.push_str(&format!(
@@ -1824,7 +1828,7 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     new_parts.join(seperator)
 }
 
-fn write_metadata_csvs_from_datapackage(output_dir: PathBuf) -> Result<()> {
+pub fn write_metadata_csvs_from_datapackage(output_dir: PathBuf) -> Result<()> {
     let datapackage_path = output_dir.join("datapackage.json");
 
     let fields_filepath = output_dir.join("fields.csv");
@@ -1914,6 +1918,9 @@ pub fn flatten<R: Read>(
             warn!("XLSX output not supported in multi threaded mode");
             options.xlsx = false;
         }
+        if options.inline_one_to_one {
+            warn!("Inline one-to-one may not work correctly when using muliple threads");
+        }
         if final_output_path.is_dir() {
             if options.force {
                 remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
@@ -1952,6 +1959,7 @@ pub fn flatten<R: Read>(
             options_clone.csv = true;
             options_clone.sqlite = false;
             options_clone.parquet = false;
+            options_clone.thread_name = format!("Thread {index}: ");
             output_path = parts_path.join(index.to_string());
         }
         output_paths.push(output_path.clone().to_string_lossy().to_string());
@@ -1992,7 +2000,7 @@ pub fn flatten<R: Read>(
                 flat_files.create_rows()?;
                 count += 1;
                 if count % 500000 == 0 {
-                    info!("Thread {} Processed {} values so far.", index, count);
+                    flat_files.log_info(&format!("Processed {} values so far.", count));
                     if TERMINATE.load(Ordering::SeqCst) {
                         log::debug!("Terminating..");
                         return Err(Error::Terminated {});
@@ -2014,7 +2022,7 @@ pub fn flatten<R: Read>(
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
             };
-            info!("Finished processing {} value(s)", count);
+            flat_files.log_info(&format!("{}Finished processing {} value(s)", options_clone.thread_name, count));
 
             flat_files.write_files()?;
             Ok(flat_files)
@@ -2121,6 +2129,7 @@ pub fn flatten<R: Read>(
         let op = datapackage_convert::Options::builder()
             .delete_input_csv(true)
             .build();
+        info!("Merging results");
         merge_datapackage_with_options(final_output_path.clone(), output_paths, op)
             .context(DatapackageConvertSnafu {})?;
 
@@ -2129,6 +2138,7 @@ pub fn flatten<R: Read>(
         })?;
 
         if options.parquet {
+            info!("Writing merged parquet files");
             let op = datapackage_convert::Options::builder().build();
             datapackage_to_parquet_with_options(
                 final_output_path.join("parquet"),
@@ -2139,6 +2149,7 @@ pub fn flatten<R: Read>(
         }
 
         if options.sqlite {
+            info!("Writing merged sqlite file");
             let op = datapackage_convert::Options::builder().build();
             if options.sqlite_path.is_empty() {
                 options.sqlite_path = final_output_path.join("sqlite.db").to_string_lossy().into();
