@@ -1,4 +1,5 @@
 use crossbeam_channel::Sender;
+use serde_json::Value;
 use smartstring::alias::String as SmartString;
 use std::io::prelude::*;
 use yajlish::{Context, Enclosing, Handler, Status};
@@ -17,8 +18,14 @@ pub struct ParseJson<W: std::io::Write> {
 }
 
 #[derive(Debug)]
+pub enum Json {
+    String(String),
+    Value(Value),
+}
+
+#[derive(Debug)]
 pub struct Item {
-    pub json: String,
+    pub json: Json,
     pub path: Vec<SmartString>,
 }
 
@@ -85,7 +92,7 @@ impl<W: std::io::Write> ParseJson<W> {
         {
             let json = std::mem::take(&mut self.current_object);
             return self.send(Item {
-                json,
+                json: Json::String(json),
                 path: self.no_index_path.clone(),
             });
         }
@@ -180,7 +187,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
             let json = std::mem::take(&mut self.current_object);
 
             return self.send(Item {
-                json,
+                json: Json::String(json),
                 path: self.no_index_path.clone(),
             });
         }
@@ -231,7 +238,7 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
         {
             let json = std::mem::take(&mut self.current_object);
             return self.send(Item {
-                json,
+                json: Json::String(json),
                 path: self.no_index_path.clone(),
             });
         }
@@ -263,8 +270,10 @@ mod tests {
         let mut values = vec![];
         let mut paths = vec![];
         for item in receiver {
-            values.push(serde_json::from_str(&item.json).unwrap());
-            paths.push(item.path)
+            if let Json::String(json) = item.json {
+                values.push(serde_json::from_str(&json).unwrap());
+                paths.push(item.path)
+            }
         }
         println!("here '{}'", std::str::from_utf8(&outer).unwrap());
         if !stream {

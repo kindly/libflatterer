@@ -28,6 +28,7 @@ mod yajlparser;
 
 use indexmap::IndexMap as HashMap;
 use indexmap::IndexSet as Set;
+use smallvec::ToSmallVec;
 use std::convert::TryInto;
 use std::fmt;
 use std::fs::{create_dir_all, remove_dir_all, File};
@@ -55,7 +56,7 @@ use snafu::{Backtrace, ResultExt, Snafu};
 use typed_builder::TypedBuilder;
 use xlsxwriter::Workbook;
 use yajlish::Parser;
-use yajlparser::Item;
+use yajlparser::{Item, Json};
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -233,6 +234,8 @@ pub struct Options {
     pub threads: usize,
     #[builder(default)]
     pub thread_name: String,
+    #[builder(default)]
+    pub memory: bool,
 }
 
 #[derive(Debug)]
@@ -240,7 +243,7 @@ pub struct FlatFiles {
     pub options: Options,
     pub output_dir: PathBuf,
     main_table_name: String,
-    emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]>,
+    emit_obj: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
     row_number: usize,
     sub_array_row_number: usize,
     current_path: Vec<SmartString>,
@@ -253,6 +256,13 @@ pub struct FlatFiles {
     order_map: HashMap<String, usize>,
     field_titles_map: HashMap<String, String>,
     table_order: HashMap<String, String>,
+    full_path: SmallVec<[PathItem; 10]>,
+    no_index_path: SmallVec<[SmartString; 5]>,
+    full_depth: usize,
+    no_index_depth: usize,
+    one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
+    one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
+    one_many_depth: usize,
 }
 
 #[derive(Serialize, Debug)]
@@ -372,7 +382,7 @@ impl FlatFiles {
             filename: tmp_path.to_string_lossy(),
         })?;
 
-        let smallvec_emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]> = smallvec![];
+        let smallvec_emit_obj: SmallVec<[SmallVec<[SmartString; 5]>; 5]> = smallvec![];
 
         let main_table_name = [
             options.table_prefix.clone(),
@@ -397,6 +407,14 @@ impl FlatFiles {
             order_map: HashMap::new(),
             field_titles_map: HashMap::new(),
             table_order: HashMap::new(),
+            full_path: smallvec![],
+            no_index_path: smallvec![],
+            full_depth: 0,
+            no_index_depth: 0,
+            one_to_many_full_paths: smallvec![],
+            one_to_many_no_index_paths: smallvec![],
+            one_many_depth: 0,
+
         };
 
         flat_files.set_csv()?;
@@ -448,7 +466,8 @@ impl FlatFiles {
 
     fn set_emit_obj(&mut self) -> Result<()> {
         for emit_vec in &self.options.emit_obj {
-            self.emit_obj.push(SmallVec::from_vec(emit_vec.clone()))
+            let smart_vec = emit_vec.into_iter().map(|item| SmartString::from(item)).collect();
+            self.emit_obj.push(SmallVec::from_vec(smart_vec))
         }
         Ok(())
     }
@@ -457,21 +476,17 @@ impl FlatFiles {
         &mut self,
         mut obj: Map<String, Value>,
         emit: bool,
-        full_path: SmallVec<[PathItem; 10]>,
-        no_index_path: SmallVec<[SmartString; 5]>,
-        one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
-        one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
         parent_one_to_one_key: bool,
     ) -> Option<Map<String, Value>> {
         let mut table_name = String::new();
         if emit {
             table_name = [
                 self.options.table_prefix.clone(),
-                no_index_path.join(&self.options.path_separator),
+                self.no_index_path[0..self.no_index_depth].join(&self.options.path_separator),
             ]
             .concat();
 
-            if no_index_path.is_empty() {
+            if self.full_depth == 0 {
                 table_name = self.main_table_name.clone();
             }
 
@@ -520,44 +535,41 @@ impl FlatFiles {
                     let my_array = removed_array.as_array_mut().unwrap(); //key known as array
                     for (i, array_value) in my_array.iter_mut().enumerate() {
                         let my_value = array_value.take();
-                        let mut new_full_path = full_path.clone();
-                        new_full_path.push(PathItem::Key(SmartString::from(key)));
-                        new_full_path.push(PathItem::Index(i));
+                        self.full_path[self.full_depth + 1] = PathItem::Key(SmartString::from(key));
+                        self.full_path[self.full_depth + 2] = PathItem::Index(i);
 
-                        let mut new_one_to_many_full_paths = one_to_many_full_paths.clone();
-                        new_one_to_many_full_paths.push(new_full_path.clone());
+                        self.one_to_many_full_paths[self.one_many_depth + 1] = self.full_path[..self.full_depth + 3].into();
 
-                        let mut new_no_index_path = no_index_path.clone();
-                        new_no_index_path.push(SmartString::from(key));
+                        self.no_index_path[self.no_index_depth + 1] = SmartString::from(key);
 
-                        let mut new_one_to_many_no_index_paths = one_to_many_no_index_paths.clone();
-                        new_one_to_many_no_index_paths.push(new_no_index_path.clone());
+                        self.one_to_many_no_index_paths[self.one_many_depth + 1] = self.no_index_path[..self.no_index_depth + 2].into();
 
                         if self.options.inline_one_to_one
-                            && !self.one_to_many_arrays.contains(&new_no_index_path)
+                            && !self.one_to_many_arrays.contains(&self.one_to_many_no_index_paths[self.one_many_depth+1])
                         {
                             if arr_length == 1 {
                                 one_to_one_array.push((key.clone(), my_value.clone()));
-                                if !self.one_to_one_arrays.contains(&new_no_index_path) {
-                                    self.one_to_one_arrays.push(new_no_index_path.clone())
+                                if !self.one_to_one_arrays.contains(&self.no_index_path[..self.no_index_depth + 2].into()) {
+                                    self.one_to_one_arrays.push(self.no_index_path[..self.no_index_depth + 2].to_vec().into())
                                 }
                             } else {
-                                self.one_to_one_arrays.retain(|x| x != &new_no_index_path);
-                                self.one_to_many_arrays.push(new_no_index_path.clone())
+                                let y: &SmallVec<[SmartString; 5]> = &self.no_index_path[..self.no_index_depth + 2].into();
+                                self.one_to_one_arrays.retain(|x| x != y);
+                                self.one_to_many_arrays.push(self.no_index_path[..self.no_index_depth + 2].to_vec().into())
                             }
                         }
 
                         if let Value::Object(my_obj) = my_value {
                             if !parent_one_to_one_key && !my_obj.is_empty() {
+                                self.no_index_depth += 1;
+                                self.full_depth += 2;
                                 self.handle_obj(
                                     my_obj,
                                     true,
-                                    new_full_path,
-                                    new_no_index_path,
-                                    new_one_to_many_full_paths,
-                                    new_one_to_many_no_index_paths,
                                     false,
                                 );
+                                self.no_index_depth -= 1;
+                                self.full_depth -= 2;
                             }
                         }
                     }
@@ -580,29 +592,28 @@ impl FlatFiles {
                 let my_value = value.take();
                 to_delete.push(key.clone());
 
-                let mut new_full_path = full_path.clone();
-                new_full_path.push(PathItem::Key(SmartString::from(key)));
-                let mut new_no_index_path = no_index_path.clone();
-                new_no_index_path.push(SmartString::from(key));
+                self.full_path[self.full_depth + 1] = PathItem::Key(SmartString::from(key));
+                self.no_index_path[self.no_index_depth + 1] = SmartString::from(key);
+                let new_no_index_path: &SmallVec<[SmartString; 5]> = &self.no_index_path[..self.no_index_depth + 2].into();
 
                 let mut emit_child = false;
                 if self
                     .emit_obj
                     .iter()
-                    .any(|emit_path| emit_path == &new_no_index_path)
+                    .any(|emit_path| emit_path == new_no_index_path)
                 {
                     emit_child = true;
                 }
                 if let Value::Object(my_value) = my_value {
+                    self.no_index_depth += 1;
+                    self.full_depth += 1;
                     let new_obj = self.handle_obj(
                         my_value,
                         emit_child,
-                        new_full_path,
-                        new_no_index_path,
-                        one_to_many_full_paths.clone(),
-                        one_to_many_no_index_paths.clone(),
                         one_to_one_array_keys.contains(key),
                     );
+                    self.no_index_depth -= 1;
+                    self.full_depth -= 1;
                     if let Some(mut my_obj) = new_obj {
                         for (new_key, new_value) in my_obj.iter_mut() {
                             let mut object_key = String::with_capacity(100);
@@ -627,8 +638,6 @@ impl FlatFiles {
             self.process_obj(
                 obj,
                 table_name,
-                one_to_many_full_paths,
-                one_to_many_no_index_paths,
             );
             None
         } else {
@@ -640,15 +649,13 @@ impl FlatFiles {
         &mut self,
         mut obj: Map<String, Value>,
         table_name: String,
-        one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
-        one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
     ) {
-        let mut path_iter = one_to_many_full_paths
+        let mut path_iter = self.one_to_many_full_paths[..self.one_many_depth + 1]
             .iter()
-            .zip(one_to_many_no_index_paths)
+            .zip(self.one_to_many_no_index_paths[..self.one_many_depth + 1].iter())
             .peekable();
 
-        if one_to_many_full_paths.is_empty() {
+        if self.one_many_depth == 0 {
             obj.insert(
                 String::from("_link"),
                 Value::String(
@@ -667,7 +674,7 @@ impl FlatFiles {
                         self.options.id_prefix.to_owned(),
                         self.row_number.to_string(),
                         ".".to_string(),
-                        one_to_many_full_paths[one_to_many_full_paths.len() - 1]
+                        self.one_to_many_full_paths[self.one_many_depth]
                             .iter()
                             .join("."),
                     ]
@@ -836,25 +843,20 @@ impl FlatFiles {
                 self.sub_array_row_number = 0;
                 self.current_path = initial_path.clone();
             }
-            let mut full_path =
-                SmallVec::from_iter(initial_path.iter().map(|item| PathItem::Key(item.clone())));
-            let no_index_path = SmallVec::from_vec(initial_path);
-            let mut one_to_many_full_paths = SmallVec::new();
-            let mut one_to_many_no_index_paths = SmallVec::new();
+            for (num, item) in initial_path.into_iter().enumerate() {
+                self.full_path[num] = PathItem::Key(item.clone());
+                self.no_index_path[num] = item;
+            }
 
             if has_path {
-                full_path.push(PathItem::Index(self.sub_array_row_number));
-                one_to_many_full_paths.push(full_path.clone());
-                one_to_many_no_index_paths.push(no_index_path.clone());
+                self.full_path[initial_path.len()] = PathItem::Index(self.sub_array_row_number);
+                self.one_to_many_full_paths.push(self.full_path[..initial_path.len()].into());
+                self.one_to_many_no_index_paths[0] = no_index_path.clone();
             }
 
             self.handle_obj(
                 obj,
                 true,
-                full_path,
-                no_index_path,
-                one_to_many_full_paths,
-                one_to_many_no_index_paths,
                 false,
             );
             if has_path {
@@ -1913,6 +1915,33 @@ pub fn flatten<R: Read>(
     let final_output_path = PathBuf::from(output);
     let parts_path = final_output_path.join("parts");
 
+    if options.memory {
+        let mut flat_files = FlatFiles::new(
+            final_output_path.clone().to_string_lossy().to_string(),
+            options.clone(),
+        )?;
+        if options.ndjson {
+            for line in input.lines() {
+                let mut line = line.unwrap();
+                let value: Value = serde_json::from_str(&mut line).unwrap();
+                flat_files.process_value(value, vec![]);
+                flat_files.create_rows()?;
+            }
+        } else {
+            let mut value: Value = simd_json::serde::from_reader(input).unwrap();
+            if let Some(pointed_value) = value.pointer_mut(&format!("/{}", options.path.join("/"))) {
+                if let Some(pointed_array) = pointed_value.as_array_mut() {
+                    for object_value in pointed_array {
+                        flat_files.process_value(object_value.take(), vec![]);
+                        flat_files.create_rows()?;
+                    }
+                }
+            }
+        }
+        flat_files.write_files()?;
+        return Ok(())
+    }
+
     if options.threads > 1 {
         if options.xlsx {
             warn!("XLSX output not supported in multi threaded mode");
@@ -1978,7 +2007,10 @@ pub fn flatten<R: Read>(
                 .collect_vec();
             let mut count = 0;
             for item in item_receiver.iter() {
-                let value: Value = serde_json::from_str(&item.json).context(SerdeReadSnafu {})?;
+                let value = match item.json{
+                    Json::String(json_string) => serde_json::from_str(&json_string).context(SerdeReadSnafu {})?,
+                    Json::Value(value) => value 
+                }; 
 
                 if !value.is_object() {
                     return Err(Error::FlattererProcessError {
@@ -2038,11 +2070,28 @@ pub fn flatten<R: Read>(
         for line in input.lines() {
             item_sender
                 .send(Item {
-                    json: line.context(FlattererReadSnafu { filepath: "input" })?,
+                    json: Json::String(line.context(FlattererReadSnafu { filepath: "input" })?),
                     path: vec![],
                 })
                 .context(ChannelItemSnafu {})?;
         }
+    } else if options.memory {
+        let mut value: Value = serde_json::from_reader(input).unwrap();
+        let smart_path: Vec<SmartString> = options.path.iter().map(|item| SmartString::from(item)).collect();
+        if let Some(pointed_value) = value.pointer_mut(&format!("/{}", options.path.join("/"))) {
+            if let Some(pointed_array) = pointed_value.as_array_mut() {
+                for object_value in pointed_array {
+                    item_sender
+                        .send(Item {
+                            json: Json::Value(object_value.take()),
+                            path: smart_path.clone(),
+                        })
+                        .context(ChannelItemSnafu {})?;
+                }
+
+            }
+        }
+
     } else {
         {
             let mut handler = yajlparser::ParseJson::new(
@@ -2099,9 +2148,9 @@ pub fn flatten<R: Read>(
 
         if top_level_type == "object" && !options.json_stream {
             let item = Item {
-                json: std::str::from_utf8(&outer)
+                json: Json::String(std::str::from_utf8(&outer)
                     .expect("utf8 should be checked by yajl")
-                    .to_string(),
+                    .to_string()),
                 path: vec![],
             };
             item_sender.send(item).context(ChannelItemSnafu {})?;
@@ -2654,7 +2703,28 @@ mod tests {
                 .count(),
             5000
         );
-        assert!(PathBuf::from(tmp_dir.path().join("parquet/main.parquet")).exists());
-        assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
+        //assert!(PathBuf::from(tmp_dir.path().join("parquet/main.parquet")).exists());
+        //assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
+    }
+
+    #[test]
+    fn test_memory() {
+        let options = Options::builder()
+            .threads(1)
+            .force(true)
+            .path(vec!["releases".to_string()])
+            .memory(true)
+            .ndjson(false)
+            .build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        flatten(
+            BufReader::new(File::open("../flatterer_data/testfile.json").unwrap()), // reader
+            "/tmp/moo".into(), // output directory
+            options,
+        )
+        .unwrap();
+
     }
 }

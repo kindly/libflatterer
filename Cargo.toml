@@ -32,6 +32,7 @@ rusqlite = {version = "0.27.0", features = ["bundled"] }
 datapackage_convert = "0.3.0"
 typed-builder = "0.10.0"
 num_cpus = "1.13.1"
+simd-json = "0.4.15"
 
 
 [dev-dependencies]
