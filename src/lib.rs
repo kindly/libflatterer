@@ -40,7 +40,7 @@ use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 use datapackage_convert::{
     datapackage_to_parquet_with_options, datapackage_to_sqlite_with_options,
-    merge_datapackage_with_options,
+    merge_datapackage_with_options, datapackage_to_xlsx_with_options
 };
 pub use guess_array::guess_array;
 use itertools::Itertools;
@@ -1914,10 +1914,6 @@ pub fn flatten<R: Read>(
     let parts_path = final_output_path.join("parts");
 
     if options.threads > 1 {
-        if options.xlsx {
-            warn!("XLSX output not supported in multi threaded mode");
-            options.xlsx = false;
-        }
         if options.inline_one_to_one {
             warn!("Inline one-to-one may not work correctly when using muliple threads");
         }
@@ -2156,6 +2152,18 @@ pub fn flatten<R: Read>(
             }
             datapackage_to_sqlite_with_options(
                 options.sqlite_path,
+                final_output_path.to_string_lossy().into(),
+                op,
+            )
+            .context(DatapackageConvertSnafu {})?;
+        }
+
+        if options.xlsx {
+            info!("Writing merged xlsx file");
+            let op = datapackage_convert::Options::builder().build();
+
+            datapackage_to_xlsx_with_options(
+                final_output_path.join("output.xlsx").to_string_lossy().into(),
                 final_output_path.to_string_lossy().into(),
                 op,
             )
@@ -2630,6 +2638,7 @@ mod tests {
             .json_stream(true)
             .parquet(true)
             .sqlite(true)
+            .xlsx(true)
             .threads(0)
             .force(true)
             .build();
@@ -2656,5 +2665,6 @@ mod tests {
         );
         assert!(PathBuf::from(tmp_dir.path().join("parquet/main.parquet")).exists());
         assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
+        assert!(PathBuf::from(tmp_dir.path().join("output.xlsx")).exists());
     }
 }
