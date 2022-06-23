@@ -1,14 +1,15 @@
-//! libflatterer - Lib to make JSON flatterer.
+//! libflatterer - Library to make JSON flatterer.
 //!
-//! Currently for use only for [flatterer](https://flatterer.opendata.coop/).
-//!
-//! This is all an internal API exposed to the above tool, so fairly unstable for the time being
-//! as extra arguments could be added with minor version bump.
-//!
+//! Mainly used for [flatterer](https://flatterer.opendata.coop/), which is a python library/cli using bindings to this library. Read [flatterer documentation](https://flatterer.opendata.coop/) to give high level overview of how the flattening works.
+//! Nonetheless can be used as a standalone Rust library.
+//! 
+//! 
+//! 
+//! High level usage, use flatten function, supply a BufReader, an output directory and the Options struct (generated with the builder pattern):
 //! ```
 //! use tempfile::TempDir;
 //! use std::fs::File;
-//! use libflatterer::{FlatFiles, flatten, Options};
+//! use libflatterer::{flatten, Options};
 //! use std::io::BufReader;
 //!
 //! let tmp_dir = TempDir::new().unwrap();
@@ -20,7 +21,51 @@
 //!    output_dir.to_string_lossy().into(), // output directory
 //!    options, // options
 //! ).unwrap();
+//! 
 //!```
+//! 
+//! Lower level usage, use the `FlatFiles` struct directly and supply options.  
+//! 
+//!```
+//! use tempfile::TempDir;
+//! use std::fs::File;
+//! use libflatterer::{FlatFiles, Options};
+//! use std::io::BufReader;
+//! use serde_json::json;
+//! 
+//! let myjson = json!({
+//!     "a": "a",
+//!     "c": ["a", "b", "c"],
+//!     "d": {"da": "da", "db": "2005-01-01"},
+//!     "e": [{"ea": "ee", "eb": "eb2"},
+//!           {"ea": "ff", "eb": "eb2"}],
+//! });
+//! 
+//! let tmp_dir = TempDir::new().unwrap();
+//! let output_dir = tmp_dir.path().join("output");
+//! let options = Options::builder().xlsx(true).sqlite(true).parquet(true).table_prefix("prefix_".into()).build();
+//! 
+//! // Create FlatFiles struct
+//! let mut flat_files = FlatFiles::new(
+//!     output_dir.to_string_lossy().into(), // output directory
+//!     options
+//! ).unwrap();
+//! 
+//! // process JSON to memory
+//! flat_files.process_value(myjson.clone(), vec![]);
+//! 
+//! // write processed JSON to disk. Do not need to do this for every processed value, but it is recommended.
+//! flat_files.create_rows();
+//! 
+//! // copy the above two lines for each JSON object e.g..
+//! flat_files.process_value(myjson.clone(), vec![]);
+//! flat_files.create_rows();
+//! 
+//! // ouput the selected formats
+//! flat_files.write_files();
+//! 
+//!```
+
 mod guess_array;
 mod postgresql;
 mod schema_analysis;
@@ -63,7 +108,7 @@ lazy_static::lazy_static! {
 
 lazy_static::lazy_static! {
     #[allow(clippy::invalid_regex)]
-    pub static ref INVALID_REGEX: regex::Regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
+    static ref INVALID_REGEX: regex::Regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
         .octal(true)
         .build()
         .unwrap();
@@ -163,7 +208,7 @@ type Result<T, E = Error> = std::result::Result<T, E>;
 
 /// Expreses a JSON path element, either a string  or a number.
 #[derive(Hash, Clone, Debug)]
-pub enum PathItem {
+enum PathItem {
     Key(SmartString),
     Index(usize),
 }
@@ -178,59 +223,83 @@ impl fmt::Display for PathItem {
 }
 
 #[derive(Debug)]
-pub enum TmpCSVWriter {
+enum TmpCSVWriter {
     Disk(csv::Writer<File>),
     None(),
 }
 
 #[derive(Default, Debug, TypedBuilder, Clone)]
 pub struct Options {
+    /// Output csv files. Default `true`
     #[builder(default = true)]
     pub csv: bool,
-    #[builder(default="main".into())]
-    pub main_table_name: String,
+    /// Output xlsx
     #[builder(default)]
     pub xlsx: bool,
+    /// Output sqlite
     #[builder(default)]
     pub sqlite: bool,
+    /// Output parquet
     #[builder(default)]
     pub parquet: bool,
-    #[builder(default)]
-    pub only_fields: bool,
-    #[builder(default)]
-    pub only_tables: bool,
+    /// Table name of main table, default "main"
+    #[builder(default="main".into())]
+    pub main_table_name: String,
+    /// If array of objects always has one element in it then treat as one-to-one
     #[builder(default)]
     pub inline_one_to_one: bool,
+    /// Prefix every table with supplied string,
     #[builder(default)]
     pub table_prefix: String,
+    /// Seperator used for each element, Default to "_"
     #[builder(default = "_".into())]
     pub path_separator: String,
+    /// Only output these amout of rows.
     #[builder(default)]
     pub preview: usize,
+    /// Choose sqlite db file to create or append to
     #[builder(default)]
     pub sqlite_path: String,
+    /// Prefix the main tables _link field with a prefix
     #[builder(default)]
     pub id_prefix: String,
+    /// An array of paths where new tables are generated instead of inlined in parent table
     #[builder(default)]
     pub emit_obj: Vec<Vec<String>>,
+    /// Delete output direcory if it exists
     #[builder(default)]
     pub force: bool,
+    /// JSON schema that can be used for field order and field naming
     #[builder(default)]
     pub schema: String,
+    /// Either "title", "underscore_slug" or "slug"
     #[builder(default)]
     pub schema_titles: String,
+    /// Path to array of objects that will be treated as top level object
     #[builder(default)]
     pub path: Vec<String>,
+    /// Data is concatonated JSON
     #[builder(default)]
     pub json_stream: bool,
     #[builder(default)]
+    /// Data is new line delimeted JSON
     pub ndjson: bool,
     #[builder(default)]
+    /// `tables.csv` file to use to name tables or remove tables from output
     pub tables_csv: String,
     #[builder(default)]
+    /// `fields.csv` file to use to name fields or remove fields from output
     pub fields_csv: String,
+    /// Only tables in `tables.csv` will be output
+    #[builder(default)]
+    pub only_tables: bool,
+    /// Only fiels in `fields.csv` will be output
+    #[builder(default)]
+    pub only_fields: bool,
+    /// Threads to use. Default 1.
     #[builder(default = 1)]
     pub threads: usize,
+    /// Name of thread.
     #[builder(default)]
     pub thread_name: String,
 }
@@ -256,7 +325,7 @@ pub struct FlatFiles {
 }
 
 #[derive(Serialize, Debug)]
-pub struct TableMetadata {
+struct TableMetadata {
     field_type: Vec<String>,
     fields: Vec<String>,
     fields_set: Set<String>,
@@ -636,7 +705,7 @@ impl FlatFiles {
         }
     }
 
-    pub fn process_obj(
+    fn process_obj(
         &mut self,
         mut obj: Map<String, Value>,
         table_name: String,
@@ -2667,4 +2736,5 @@ mod tests {
         assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
         assert!(PathBuf::from(tmp_dir.path().join("output.xlsx")).exists());
     }
+
 }
