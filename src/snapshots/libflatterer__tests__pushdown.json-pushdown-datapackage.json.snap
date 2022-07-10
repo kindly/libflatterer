@@ -1,0 +1,117 @@
+---
+source: src/lib.rs
+expression: "&value"
+---
+profile: tabular-data-package
+resources:
+  - profile: tabular-data-resource
+    name: main
+    flatterer_name: main
+    title: main
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          count: 1
+        - name: a
+          title: a
+          type: string
+          count: 1
+        - name: b
+          title: b
+          type: string
+          count: 1
+        - name: c
+          title: c
+          type: string
+          count: 1
+      primaryKey: _link
+    path: csv/main.csv
+  - profile: tabular-data-resource
+    name: sublist1
+    flatterer_name: sublist1
+    title: sublist1
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          count: 2
+        - name: _link_main
+          title: _link_main
+          type: string
+          count: 2
+        - name: a
+          title: a
+          type: string
+          count: 2
+        - name: d
+          title: d
+          type: string
+          count: 1
+        - name: b
+          title: b
+          type: string
+          count: 2
+        - name: c
+          title: c
+          type: string
+          count: 2
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_main
+          reference:
+            resource: main
+            fields: _link
+    path: csv/sublist1.csv
+  - profile: tabular-data-resource
+    name: sublist1_sublist2
+    flatterer_name: sublist1_sublist2
+    title: sublist1_sublist2
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          count: 2
+        - name: _link_sublist1
+          title: _link_sublist1
+          type: string
+          count: 2
+        - name: _link_main
+          title: _link_main
+          type: string
+          count: 2
+        - name: e
+          title: e
+          type: string
+          count: 2
+        - name: a
+          title: a
+          type: string
+          count: 2
+        - name: b
+          title: b
+          type: string
+          count: 2
+        - name: c
+          title: c
+          type: string
+          count: 2
+        - name: d
+          title: d
+          type: string
+          count: 1
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_sublist1
+          reference:
+            resource: sublist1
+            fields: _link
+        - fields: _link_main
+          reference:
+            resource: main
+            fields: _link
+    path: csv/sublist1_sublist2.csv
+

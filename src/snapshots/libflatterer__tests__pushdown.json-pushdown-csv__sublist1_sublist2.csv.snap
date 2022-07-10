@@ -1,0 +1,8 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "_link,_link_sublist1,_link_main,e,a,b,c,d"
+- "0.sublist1.0.sublist2.0,0.sublist1.0,0,value e,should not be ovveridden,value b,value c,value d"
+- "0.sublist1.1.sublist2.0,0.sublist1.1,0,value e,value a,value b,value c,"
+

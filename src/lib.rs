@@ -302,6 +302,9 @@ pub struct Options {
     /// Name of thread.
     #[builder(default)]
     pub thread_name: String,
+    /// Name of thread.
+    #[builder(default)]
+    pub pushdown: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -531,6 +534,7 @@ impl FlatFiles {
         one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
         parent_one_to_one_key: bool,
+        pushdown_values: SmallVec<[Value; 10]>,
     ) -> Option<Map<String, Value>> {
         let mut table_name = String::new();
         if emit {
@@ -553,6 +557,15 @@ impl FlatFiles {
         let mut to_delete: SmallVec<[String; 30]> = smallvec![];
 
         let mut one_to_one_array: SmallVec<[(String, Value); 30]> = smallvec![];
+
+        let mut new_pushdown_values = pushdown_values.clone();
+
+
+        for (num, key) in self.options.pushdown.iter().enumerate() {
+            if let Some(value) = obj.get(key) {
+                new_pushdown_values[num] = value.clone()
+            }
+        }
 
         for (key, value) in obj.iter_mut() {
             if let Some(arr) = value.as_array() {
@@ -626,6 +639,7 @@ impl FlatFiles {
                                     new_one_to_many_full_paths,
                                     new_one_to_many_no_index_paths,
                                     false,
+                                    new_pushdown_values.clone()
                                 );
                             }
                         }
@@ -671,6 +685,7 @@ impl FlatFiles {
                         one_to_many_full_paths.clone(),
                         one_to_many_no_index_paths.clone(),
                         one_to_one_array_keys.contains(key),
+                        new_pushdown_values.clone()
                     );
                     if let Some(mut my_obj) = new_obj {
                         for (new_key, new_value) in my_obj.iter_mut() {
@@ -693,6 +708,11 @@ impl FlatFiles {
         }
 
         if emit {
+            for (key, value) in self.options.pushdown.iter().zip(pushdown_values) {
+                if !value.is_null() && !obj.contains_key(key) {
+                    obj.insert(key.to_owned(), value);
+                }
+            }
             self.process_obj(
                 obj,
                 table_name,
@@ -917,6 +937,12 @@ impl FlatFiles {
                 one_to_many_no_index_paths.push(no_index_path.clone());
             }
 
+            let mut pushdown_values = smallvec![];
+
+            for _ in 0..self.options.pushdown.len() {
+                pushdown_values.push(Value::Null)
+            }
+
             self.handle_obj(
                 obj,
                 true,
@@ -925,6 +951,7 @@ impl FlatFiles {
                 one_to_many_full_paths,
                 one_to_many_no_index_paths,
                 false,
+                pushdown_values,
             );
             if has_path {
                 self.sub_array_row_number += 1;
@@ -2273,6 +2300,17 @@ mod tests {
             name.push_str("-inline")
         }
 
+        if let Some(pushdown) = options["pushdown"].as_array() {
+            let mut values = vec![];
+            for item in pushdown {
+                if let Some(value) = item.as_str() {
+                    values.push(value.to_owned())
+                }
+            }
+            flatten_options.pushdown = values;
+            name.push_str("-pushdown")
+        }
+
         if let Some(threads) = options["threads"].as_i64() {
             flatten_options.threads = usize::try_from(threads).unwrap();
             name.push_str("-threads")
@@ -2567,6 +2605,12 @@ mod tests {
     #[test]
     fn test_array_str_after_stream() {
         test_output("fixtures/array_str_after_stream.json", vec![], json!({}));
+    }
+
+    #[test]
+    fn test_pushdown() {
+        test_output("fixtures/pushdown.json", vec!["csv/main.csv", "csv/sublist1.csv", "csv/sublist1_sublist2.csv"], json!({"pushdown": ["a", "b", "c", "d"]}))
+        //test_output("fixtures/pushdown.json", vec![], json!({}))
     }
 
     #[test]

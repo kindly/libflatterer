@@ -1,0 +1,7 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "_link,a,b,c"
+- "0,value a,value b,value c"
+

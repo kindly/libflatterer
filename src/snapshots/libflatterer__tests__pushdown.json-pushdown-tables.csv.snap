@@ -1,0 +1,9 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "table_name,table_title"
+- "main,main"
+- "sublist1,sublist1"
+- "sublist1_sublist2,sublist1_sublist2"
+
