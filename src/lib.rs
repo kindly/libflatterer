@@ -184,7 +184,7 @@ pub enum Error {
     },
     #[snafu(display("Invalid JSON due to the following error: {}", source))]
     SerdeReadError { source: serde_json::Error },
-    #[snafu(display("{}", message))]
+    #[snafu(display("Serde Error: {}", message))]
     FlattererProcessError { message: String },
     #[snafu(display("Error with writing XLSX file"))]
     FlattererXLSXError { source: xlsxwriter::XlsxError },
@@ -1729,7 +1729,7 @@ impl FlatFiles {
             let table_order = metadata.order.clone();
             let mut create_table_sql = String::new();
             create_table_sql.push_str(&format!(
-                "CREATE TABLE \"{ }\"(\n",
+                "CREATE TABLE [{}](\n",
                 table_title.to_lowercase()
             ));
 
@@ -1757,10 +1757,10 @@ impl FlatFiles {
                 let field_title = &metadata.field_titles_lc[order];
 
                 if field_name.starts_with("_link") && field_name != "_link" {
-                    indexes.push(format!("CREATE INDEX idx_{table_title}_{field_title} on {table_title}({field_title});"));
+                    indexes.push(format!("CREATE INDEX [idx_{table_title}_{field_title}] on [{table_title}]([{field_title}]);"));
                     let foreign_table = self.table_order.get(&field_name[6..]).unwrap();
                     foreign_keys.push(format!(
-                        "FOREIGN KEY ({field_title}) REFERENCES {foreign_table}(_link)"
+                        "FOREIGN KEY ([{field_title}]) REFERENCES [{foreign_table}](_link)"
                     ));
                 }
             }
@@ -1788,7 +1788,7 @@ impl FlatFiles {
             {
                 let mut statement = tx
                     .prepare_cached(&format!(
-                        "INSERT INTO {table_title} VALUES ({question_marks})"
+                        "INSERT INTO [{table_title}] VALUES ({question_marks})"
                     ))
                     .context(RusqliteSnafu {})?;
 
@@ -2359,6 +2359,7 @@ mod tests {
                 println!("{}", error);
                 assert!(error.to_string().contains(error_text))
             } else {
+                println!("{:?}", error);
                 panic!(
                     "Error raised and there is no error_text to match it. Error was \n{}",
                     error

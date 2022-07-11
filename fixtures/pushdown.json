@@ -1,0 +1,17 @@
+[
+  {
+    "a": "value a", 
+    "b": "value b", 
+    "c": "value c", 
+    "sublist1": [
+        {
+            "a": "should not be ovveridden",
+            "d": "value d",
+            "sublist2": [{"e": "value e"}]
+        },
+        {
+            "sublist2": [{"e": "value e"}]
+        }
+    ]
+  }
+]
