@@ -2,9 +2,9 @@
 //!
 //! Mainly used for [flatterer](https://flatterer.opendata.coop/), which is a python library/cli using bindings to this library. Read [flatterer documentation](https://flatterer.opendata.coop/) to give high level overview of how the flattening works.
 //! Nonetheless can be used as a standalone Rust library.
-//! 
-//! 
-//! 
+//!
+//!
+//!
 //! High level usage, use flatten function, supply a BufReader, an output directory and the Options struct (generated with the builder pattern):
 //! ```
 //! use tempfile::TempDir;
@@ -21,18 +21,18 @@
 //!    output_dir.to_string_lossy().into(), // output directory
 //!    options, // options
 //! ).unwrap();
-//! 
+//!
 //!```
-//! 
+//!
 //! Lower level usage, use the `FlatFiles` struct directly and supply options.  
-//! 
+//!
 //!```
 //! use tempfile::TempDir;
 //! use std::fs::File;
 //! use libflatterer::{FlatFiles, Options};
 //! use std::io::BufReader;
 //! use serde_json::json;
-//! 
+//!
 //! let myjson = json!({
 //!     "a": "a",
 //!     "c": ["a", "b", "c"],
@@ -40,30 +40,30 @@
 //!     "e": [{"ea": "ee", "eb": "eb2"},
 //!           {"ea": "ff", "eb": "eb2"}],
 //! });
-//! 
+//!
 //! let tmp_dir = TempDir::new().unwrap();
 //! let output_dir = tmp_dir.path().join("output");
 //! let options = Options::builder().xlsx(true).sqlite(true).parquet(true).table_prefix("prefix_".into()).build();
-//! 
+//!
 //! // Create FlatFiles struct
 //! let mut flat_files = FlatFiles::new(
 //!     output_dir.to_string_lossy().into(), // output directory
 //!     options
 //! ).unwrap();
-//! 
+//!
 //! // process JSON to memory
 //! flat_files.process_value(myjson.clone(), vec![]);
-//! 
+//!
 //! // write processed JSON to disk. Do not need to do this for every processed value, but it is recommended.
 //! flat_files.create_rows();
-//! 
+//!
 //! // copy the above two lines for each JSON object e.g..
 //! flat_files.process_value(myjson.clone(), vec![]);
 //! flat_files.create_rows();
-//! 
+//!
 //! // ouput the selected formats
 //! flat_files.write_files();
-//! 
+//!
 //!```
 
 mod guess_array;
@@ -84,8 +84,9 @@ use std::{panic, thread};
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 use datapackage_convert::{
-    datapackage_to_parquet_with_options, datapackage_to_sqlite_with_options,
-    merge_datapackage_with_options, datapackage_to_xlsx_with_options
+    datapackage_to_parquet_with_options, datapackage_to_postgres_with_options,
+    datapackage_to_sqlite_with_options, datapackage_to_xlsx_with_options,
+    merge_datapackage_with_options,
 };
 pub use guess_array::guess_array;
 use itertools::Itertools;
@@ -302,9 +303,18 @@ pub struct Options {
     /// Name of thread.
     #[builder(default)]
     pub thread_name: String,
-    /// Name of thread.
+    /// Pushdown fields to sub objects.
     #[builder(default)]
     pub pushdown: Vec<String>,
+    /// postgres schema
+    #[builder(default)]
+    pub postgres_connection: String,
+    /// drop tables
+    #[builder(default)]
+    pub drop: bool,
+    /// postgres schema
+    #[builder(default)]
+    pub postgres_schema: String,
 }
 
 #[derive(Debug)]
@@ -560,7 +570,6 @@ impl FlatFiles {
 
         let mut new_pushdown_values = pushdown_values.clone();
 
-
         for (num, key) in self.options.pushdown.iter().enumerate() {
             if let Some(value) = obj.get(key) {
                 new_pushdown_values[num] = value.clone()
@@ -639,7 +648,7 @@ impl FlatFiles {
                                     new_one_to_many_full_paths,
                                     new_one_to_many_no_index_paths,
                                     false,
-                                    new_pushdown_values.clone()
+                                    new_pushdown_values.clone(),
                                 );
                             }
                         }
@@ -685,7 +694,7 @@ impl FlatFiles {
                         one_to_many_full_paths.clone(),
                         one_to_many_no_index_paths.clone(),
                         one_to_one_array_keys.contains(key),
-                        new_pushdown_values.clone()
+                        new_pushdown_values.clone(),
                     );
                     if let Some(mut my_obj) = new_obj {
                         for (new_key, new_value) in my_obj.iter_mut() {
@@ -823,6 +832,7 @@ impl FlatFiles {
                     || self.options.xlsx
                     || self.options.sqlite
                     || self.options.parquet
+                    || !self.options.postgres_connection.is_empty()
                 {
                     let output_path = self.output_dir.join(format!("tmp/{}.csv", table));
                     self.tmp_csvs.insert(
@@ -1120,10 +1130,9 @@ impl FlatFiles {
 
         self.write_data_package()?;
 
-        if self.options.csv || self.options.parquet {
+        if self.options.csv || self.options.parquet || !self.options.postgres_connection.is_empty()
+        {
             self.write_csvs()?;
-            self.write_postgresql()?;
-            self.write_sqlite()?;
         };
 
         if self.options.xlsx {
@@ -1141,6 +1150,22 @@ impl FlatFiles {
                 .build();
             datapackage_to_parquet_with_options(
                 self.output_dir.join("parquet"),
+                self.output_dir.to_string_lossy().into(),
+                options,
+            )
+            .context(DatapackageConvertSnafu {})?;
+        };
+
+        if !self.options.postgres_connection.is_empty() {
+            self.log_info("Loading data into postgres");
+            let options = datapackage_convert::Options::builder()
+                .delete_input_csv(!self.options.csv)
+                .drop(self.options.drop)
+                .schema(self.options.postgres_schema.clone())
+                .build();
+            println!("{options:?}");
+            datapackage_to_postgres_with_options(
+                self.options.postgres_connection.clone(),
                 self.output_dir.to_string_lossy().into(),
                 options,
             )
@@ -1340,7 +1365,10 @@ impl FlatFiles {
             } else {
                 std::cmp::min(self.options.preview, metadata.rows)
             };
-            self.log_info(&format!("    Writing {} row(s) to {}.csv", row_count, table_title));
+            self.log_info(&format!(
+                "    Writing {} row(s) to {}.csv",
+                row_count, table_title
+            ));
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
             };
@@ -1356,7 +1384,9 @@ impl FlatFiles {
 
             for order in table_order {
                 if !metadata.ignore_fields[order] {
-                    non_ignored_fields.push(metadata.field_titles[order].clone())
+                    let field = metadata.field_titles[order].clone();
+                    let clean_field = INVALID_REGEX.replace_all(&field, " ");
+                    non_ignored_fields.push(clean_field.to_string())
                 }
             }
 
@@ -1728,10 +1758,7 @@ impl FlatFiles {
             ));
             let table_order = metadata.order.clone();
             let mut create_table_sql = String::new();
-            create_table_sql.push_str(&format!(
-                "CREATE TABLE [{}](\n",
-                table_title.to_lowercase()
-            ));
+            create_table_sql.push_str(&format!("CREATE TABLE [{}](\n", table_title.to_lowercase()));
 
             let mut fields = Vec::new();
             let mut indexes = Vec::new();
@@ -2051,6 +2078,7 @@ pub fn flatten<R: Read>(
             options_clone.csv = true;
             options_clone.sqlite = false;
             options_clone.parquet = false;
+            options_clone.postgres_connection = "".into();
             options_clone.thread_name = format!("Thread {index}: ");
             output_path = parts_path.join(index.to_string());
         }
@@ -2114,7 +2142,10 @@ pub fn flatten<R: Read>(
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
             };
-            flat_files.log_info(&format!("{}Finished processing {} value(s)", options_clone.thread_name, count));
+            flat_files.log_info(&format!(
+                "{}Finished processing {} value(s)",
+                options_clone.thread_name, count
+            ));
 
             flat_files.write_files()?;
             Ok(flat_files)
@@ -2240,6 +2271,20 @@ pub fn flatten<R: Read>(
             .context(DatapackageConvertSnafu {})?;
         }
 
+        if !options.postgres_connection.is_empty() {
+            info!("Loading data into postgres");
+            let op = datapackage_convert::Options::builder()
+                .drop(options.drop)
+                .schema(options.postgres_schema.clone())
+                .build();
+            datapackage_to_postgres_with_options(
+                options.postgres_connection.clone(),
+                final_output_path.to_string_lossy().into(),
+                op,
+            )
+            .context(DatapackageConvertSnafu {})?;
+        };
+
         if options.sqlite {
             info!("Writing merged sqlite file");
             let op = datapackage_convert::Options::builder().build();
@@ -2259,7 +2304,10 @@ pub fn flatten<R: Read>(
             let op = datapackage_convert::Options::builder().build();
 
             datapackage_to_xlsx_with_options(
-                final_output_path.join("output.xlsx").to_string_lossy().into(),
+                final_output_path
+                    .join("output.xlsx")
+                    .to_string_lossy()
+                    .into(),
                 final_output_path.to_string_lossy().into(),
                 op,
             )
@@ -2294,6 +2342,8 @@ mod tests {
         flatten_options.csv = true;
         flatten_options.sqlite = true;
         flatten_options.parquet = true;
+        flatten_options.postgres_connection = "postgres://test@localhost/test".into();
+        flatten_options.drop = true;
 
         if let Some(inline) = options["inline"].as_bool() {
             flatten_options.inline_one_to_one = inline;
@@ -2347,6 +2397,8 @@ mod tests {
         }
 
         flatten_options.json_stream = !file.ends_with(".json");
+
+        flatten_options.postgres_schema = name.clone();
 
         let result = flatten(
             BufReader::new(File::open(file).unwrap()),
@@ -2461,11 +2513,7 @@ mod tests {
 
     #[test]
     fn full_test_mixed_case() {
-        test_output(
-            "fixtures/mixed_case_same.json",
-            vec!["postgresql/postgresql_schema.sql"],
-            json!({}),
-        )
+        test_output("fixtures/mixed_case_same.json", vec![], json!({}))
     }
 
     #[test]
@@ -2610,7 +2658,15 @@ mod tests {
 
     #[test]
     fn test_pushdown() {
-        test_output("fixtures/pushdown.json", vec!["csv/main.csv", "csv/sublist1.csv", "csv/sublist1_sublist2.csv"], json!({"pushdown": ["a", "b", "c", "d"]}))
+        test_output(
+            "fixtures/pushdown.json",
+            vec![
+                "csv/main.csv",
+                "csv/sublist1.csv",
+                "csv/sublist1_sublist2.csv",
+            ],
+            json!({"pushdown": ["a", "b", "c", "d"]}),
+        )
         //test_output("fixtures/pushdown.json", vec![], json!({}))
     }
 
@@ -2753,6 +2809,8 @@ mod tests {
             .parquet(true)
             .sqlite(true)
             .xlsx(true)
+            .postgres_connection("postgres://test@localhost/test".into())
+            .drop(true)
             .threads(0)
             .force(true)
             .build();
@@ -2761,13 +2819,15 @@ mod tests {
 
         flatten(
             BufReader::new(File::open("fixtures/daily_16.json").unwrap()), // reader
-           tmp_dir.path().to_string_lossy().into(), // output directory
+            tmp_dir.path().to_string_lossy().into(),                       // output directory
             options,
         )
         .unwrap();
 
         let value: Value =
-            serde_json::from_reader(File::open(tmp_dir.path().join("datapackage.json")).unwrap()).unwrap();
+            serde_json::from_reader(File::open(tmp_dir.path().join("datapackage.json")).unwrap())
+                .unwrap();
+        
 
         insta::assert_yaml_snapshot!(&value);
 
@@ -2781,5 +2841,4 @@ mod tests {
         assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
         assert!(PathBuf::from(tmp_dir.path().join("output.xlsx")).exists());
     }
-
 }
