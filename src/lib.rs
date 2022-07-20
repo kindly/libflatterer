@@ -2815,7 +2815,7 @@ mod tests {
             .parquet(true)
             .sqlite(true)
             .xlsx(true)
-            .postgres_connection("postgres://test@localhost/test".into())
+            .postgres_connection("postgres://test:test@localhost/test".into())
             .drop(true)
             .threads(0)
             .force(true)
