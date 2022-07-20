@@ -2,7 +2,7 @@
 source: src/lib.rs
 expression: output
 ---
-- "_link,_link_main,a,d,b,c"
-- "0.sublist1.0,0,should not be ovveridden,value d,value b,value c"
-- "0.sublist1.1,0,value a,,value b,value c"
+- "_link,_link_main,a,d,main_a,main_b,main_c"
+- "0.sublist1.0,0,should not be ovveridden,value d,value a,value b,value c"
+- "0.sublist1.1,0,,,value a,value b,value c"
 

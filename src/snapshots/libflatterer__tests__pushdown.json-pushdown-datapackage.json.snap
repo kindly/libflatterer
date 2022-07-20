@@ -45,17 +45,21 @@ resources:
         - name: a
           title: a
           type: string
-          count: 2
+          count: 1
         - name: d
           title: d
           type: string
           count: 1
-        - name: b
-          title: b
+        - name: main_a
+          title: main_a
           type: string
           count: 2
-        - name: c
-          title: c
+        - name: main_b
+          title: main_b
+          type: string
+          count: 2
+        - name: main_c
+          title: main_c
           type: string
           count: 2
       primaryKey: _link
@@ -87,20 +91,24 @@ resources:
           title: e
           type: string
           count: 2
-        - name: a
-          title: a
+        - name: main_a
+          title: main_a
           type: string
           count: 2
-        - name: b
-          title: b
+        - name: main_b
+          title: main_b
           type: string
           count: 2
-        - name: c
-          title: c
+        - name: main_c
+          title: main_c
           type: string
           count: 2
-        - name: d
-          title: d
+        - name: sublist1_a
+          title: sublist1_a
+          type: string
+          count: 1
+        - name: sublist1_d
+          title: sublist1_d
           type: string
           count: 1
       primaryKey: _link

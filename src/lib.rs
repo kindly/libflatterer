@@ -544,19 +544,13 @@ impl FlatFiles {
         one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
         parent_one_to_one_key: bool,
+        pushdown_keys: SmallVec<[String; 10]>,
         pushdown_values: SmallVec<[Value; 10]>,
     ) -> Option<Map<String, Value>> {
         let mut table_name = String::new();
-        if emit {
-            table_name = [
-                self.options.table_prefix.clone(),
-                no_index_path.join(&self.options.path_separator),
-            ]
-            .concat();
 
-            if no_index_path.is_empty() {
-                table_name = self.main_table_name.clone();
-            }
+        if emit {
+            self.set_table_name(&mut table_name, &no_index_path);
 
             if !self.table_rows.contains_key(&table_name) {
                 self.table_rows.insert(table_name.clone(), vec![]);
@@ -568,11 +562,16 @@ impl FlatFiles {
 
         let mut one_to_one_array: SmallVec<[(String, Value); 30]> = smallvec![];
 
+        let mut new_pushdown_keys = pushdown_keys.clone();
         let mut new_pushdown_values = pushdown_values.clone();
 
-        for (num, key) in self.options.pushdown.iter().enumerate() {
+        for key in self.options.pushdown.iter() {
             if let Some(value) = obj.get(key) {
-                new_pushdown_values[num] = value.clone()
+                if table_name.is_empty() {
+                    self.set_table_name(&mut table_name, &no_index_path);
+                }
+                new_pushdown_keys.push([table_name.clone(), self.options.path_separator.clone(), key.clone()].concat());
+                new_pushdown_values.push(value.clone());
             }
         }
 
@@ -648,6 +647,7 @@ impl FlatFiles {
                                     new_one_to_many_full_paths,
                                     new_one_to_many_no_index_paths,
                                     false,
+                                    new_pushdown_keys.clone(),
                                     new_pushdown_values.clone(),
                                 );
                             }
@@ -694,6 +694,7 @@ impl FlatFiles {
                         one_to_many_full_paths.clone(),
                         one_to_many_no_index_paths.clone(),
                         one_to_one_array_keys.contains(key),
+                        new_pushdown_keys.clone(),
                         new_pushdown_values.clone(),
                     );
                     if let Some(mut my_obj) = new_obj {
@@ -717,7 +718,7 @@ impl FlatFiles {
         }
 
         if emit {
-            for (key, value) in self.options.pushdown.iter().zip(pushdown_values) {
+            for (key, value) in pushdown_keys.iter().zip(pushdown_values) {
                 if !value.is_null() && !obj.contains_key(key) {
                     obj.insert(key.to_owned(), value);
                 }
@@ -731,6 +732,17 @@ impl FlatFiles {
             None
         } else {
             Some(obj)
+        }
+    }
+
+    fn set_table_name(&self, table_name: &mut String, no_index_path: &SmallVec<[SmartString; 5]>) {
+        *table_name = [
+            self.options.table_prefix.clone(),
+            no_index_path.join(&self.options.path_separator),
+        ]
+        .concat();
+        if no_index_path.is_empty() {
+            *table_name = self.main_table_name.clone();
         }
     }
 
@@ -947,12 +959,6 @@ impl FlatFiles {
                 one_to_many_no_index_paths.push(no_index_path.clone());
             }
 
-            let mut pushdown_values = smallvec![];
-
-            for _ in 0..self.options.pushdown.len() {
-                pushdown_values.push(Value::Null)
-            }
-
             self.handle_obj(
                 obj,
                 true,
@@ -961,7 +967,8 @@ impl FlatFiles {
                 one_to_many_full_paths,
                 one_to_many_no_index_paths,
                 false,
-                pushdown_values,
+                smallvec![],
+                smallvec![],
             );
             if has_path {
                 self.sub_array_row_number += 1;
@@ -2667,7 +2674,6 @@ mod tests {
             ],
             json!({"pushdown": ["a", "b", "c", "d"]}),
         )
-        //test_output("fixtures/pushdown.json", vec![], json!({}))
     }
 
     #[test]
