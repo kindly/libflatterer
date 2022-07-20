@@ -2349,7 +2349,7 @@ mod tests {
         flatten_options.csv = true;
         flatten_options.sqlite = true;
         flatten_options.parquet = true;
-        flatten_options.postgres_connection = "postgres://test@localhost/test".into();
+        flatten_options.postgres_connection = "postgres://test:test@localhost/test".into();
         flatten_options.drop = true;
 
         if let Some(inline) = options["inline"].as_bool() {
