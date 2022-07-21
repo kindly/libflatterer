@@ -1170,7 +1170,6 @@ impl FlatFiles {
                 .drop(self.options.drop)
                 .schema(self.options.postgres_schema.clone())
                 .build();
-            println!("{options:?}");
             datapackage_to_postgres_with_options(
                 self.options.postgres_connection.clone(),
                 self.output_dir.to_string_lossy().into(),
