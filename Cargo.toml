@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.14.1"
+version = "0.14.2"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"

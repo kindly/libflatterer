@@ -315,6 +315,9 @@ pub struct Options {
     /// postgres schema
     #[builder(default)]
     pub postgres_schema: String,
+    /// sql scripts
+    #[builder(default)]
+    pub sql_scripts: bool,
 }
 
 #[derive(Debug)]
@@ -1141,6 +1144,11 @@ impl FlatFiles {
         {
             self.write_csvs()?;
         };
+
+        if self.options.sql_scripts {
+            self.write_postgresql()?;
+            self.write_sqlite()?;
+        }
 
         if self.options.xlsx {
             self.write_xlsx()?;
@@ -2350,6 +2358,7 @@ mod tests {
         flatten_options.parquet = true;
         flatten_options.postgres_connection = "postgres://test:test@localhost/test".into();
         flatten_options.drop = true;
+        flatten_options.sql_scripts = true;
 
         if let Some(inline) = options["inline"].as_bool() {
             flatten_options.inline_one_to_one = inline;
@@ -2519,7 +2528,7 @@ mod tests {
 
     #[test]
     fn full_test_mixed_case() {
-        test_output("fixtures/mixed_case_same.json", vec![], json!({}))
+        test_output("fixtures/mixed_case_same.json", vec!["postgresql/postgresql_schema.sql"], json!({}))
     }
 
     #[test]
