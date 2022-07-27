@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.14.2"
+version = "0.14.3"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -30,7 +30,7 @@ log = "0.4"
 lazy_static = "1"
 rusqlite = {version = "0.27.0", features = ["bundled"] }
 #datapackage_convert = {"path"= "../datapackage_convert"}
-datapackage_convert = "0.5.4"
+datapackage_convert = "0.5.6"
 typed-builder = "0.10.0"
 num_cpus = "1.13.1"
 
