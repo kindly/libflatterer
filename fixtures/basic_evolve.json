@@ -1,0 +1,16 @@
+[
+  {
+    "id": "2",
+    "new": "moo",
+    "developer": [
+      {"name":"deva", "title": "dev title"}
+    ],
+    "platforms": [
+      {"name":"PC", "spec": "hige" }
+    ],
+    "rating": {
+      "name": "Everyone"
+    },
+    "title": "A Game"
+  }
+]
