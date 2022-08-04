@@ -443,7 +443,7 @@ impl FlatFiles {
         FlatFiles::new(output_dir, options)
     }
 
-    pub fn new(output_dir: String, options: Options) -> Result<Self> {
+    pub fn new(output_dir: String, mut options: Options) -> Result<Self> {
         let output_path = PathBuf::from(output_dir.clone());
         if output_path.is_dir() {
             if options.force {
@@ -467,6 +467,10 @@ impl FlatFiles {
             options.main_table_name.clone(),
         ]
         .concat();
+
+        if options.evolve && options.id_prefix.is_empty(){
+            options.id_prefix = format!("{}.", nanoid::nanoid!(10));
+        }
 
         let mut flat_files = FlatFiles {
             output_dir: output_dir.into(),
@@ -2373,7 +2377,7 @@ pub fn flatten<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs::read_to_string;
+    use std::fs::{read_to_string, remove_file};
     use tempfile::TempDir;
 
     fn test_output(file: &str, output: Vec<&str>, options: Value) {
@@ -2887,5 +2891,46 @@ mod tests {
         assert!(PathBuf::from(tmp_dir.path().join("parquet/main.parquet")).exists());
         assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
         assert!(PathBuf::from(tmp_dir.path().join("output.xlsx")).exists());
+    }
+
+    #[test]
+    fn test_evolve() {
+        remove_file("/tmp/evolve.sqlite").ok();
+
+        let options = Options::builder()
+            .sqlite(true)
+            .postgres_connection("postgres://test:test@localhost/test".into())
+            .sqlite_path("/tmp/evolve.sqlite".into())
+            .postgres_schema("evolve_basic".into())
+            .drop(true)
+            .evolve(true)
+            .force(true)
+            .build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        flatten(
+            BufReader::new(File::open("fixtures/basic.json").unwrap()),
+            tmp_dir.path().to_string_lossy().into(),
+            options,
+        )
+        .unwrap();
+
+        let options = Options::builder()
+            .sqlite(true)
+            .postgres_connection("postgres://test:test@localhost/test".into())
+            .sqlite_path("/tmp/evolve.sqlite".into())
+            .evolve(true)
+            .postgres_schema("evolve_basic".into())
+            .force(true)
+            .build();
+
+        flatten(
+            BufReader::new(File::open("fixtures/basic_evolve.json").unwrap()),
+            tmp_dir.path().to_string_lossy().into(),
+            options,
+        )
+        .unwrap();
+
     }
 }
