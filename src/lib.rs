@@ -318,6 +318,9 @@ pub struct Options {
     /// sql scripts
     #[builder(default)]
     pub sql_scripts: bool,
+    /// evolve data withing sqlite and postgres db 
+    #[builder(default)]
+    pub evolve: bool,
 }
 
 #[derive(Debug)]
@@ -1138,7 +1141,7 @@ impl FlatFiles {
             }
         }
 
-        self.write_data_package()?;
+        self.write_data_package(false)?;
 
         if self.options.csv || self.options.parquet || !self.options.postgres_connection.is_empty()
         {
@@ -1155,7 +1158,29 @@ impl FlatFiles {
         };
 
         if self.options.sqlite {
-            self.write_sqlite_db()?;
+            self.log_info("Loading data into sqlite");
+
+            self.write_data_package(true)?;
+
+            let mut sqlite_dir_path = self.output_dir.join("sqlite.db");
+            if !self.options.sqlite_path.is_empty() {
+                sqlite_dir_path = PathBuf::from(&self.options.sqlite_path);
+            }
+
+            let options = datapackage_convert::Options::builder()
+                .delete_input_csv(!self.options.csv)
+                .drop(self.options.drop)
+                .evolve(self.options.evolve)
+                .build();
+
+            datapackage_to_sqlite_with_options(
+                sqlite_dir_path.to_string_lossy().into(),
+                self.output_dir.to_string_lossy().into(),
+                options,
+            )
+            .context(DatapackageConvertSnafu {})?;
+
+            self.write_data_package(false)?;
         };
 
         if self.options.parquet {
@@ -1176,6 +1201,7 @@ impl FlatFiles {
             let options = datapackage_convert::Options::builder()
                 .delete_input_csv(!self.options.csv)
                 .drop(self.options.drop)
+                .evolve(self.options.evolve)
                 .schema(self.options.postgres_schema.clone())
                 .build();
             datapackage_to_postgres_with_options(
@@ -1198,7 +1224,7 @@ impl FlatFiles {
         Ok(())
     }
 
-    pub fn write_data_package(&mut self) -> Result<()> {
+    pub fn write_data_package(&mut self, lowercase_names: bool) -> Result<()> {
         let metadata_file = File::create(self.output_dir.join("datapackage.json")).context(
             FlattererFileWriteSnafu {
                 filename: "datapackage.json",
@@ -1226,7 +1252,7 @@ impl FlatFiles {
                     rest => rest,
                 };
 
-                let field_name = &metadata.fields[order];
+                let field_name = if lowercase_names {&metadata.field_titles_lc[order]} else {&metadata.fields[order]};
                 let field_title = &metadata.fields[order];
 
                 let field = json!({
@@ -1238,7 +1264,7 @@ impl FlatFiles {
                 fields.push(field);
 
                 if field_name.starts_with("_link") && field_name != "_link" {
-                    let foreign_table = self.table_order.get(&field_name[6..]).unwrap();
+                    let foreign_table = self.table_order.get(&field_title[6..]).unwrap();
                     foreign_keys.push(
                         json!(
                         {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
@@ -2290,6 +2316,7 @@ pub fn flatten<R: Read>(
             let op = datapackage_convert::Options::builder()
                 .drop(options.drop)
                 .schema(options.postgres_schema.clone())
+                .evolve(options.evolve)
                 .build();
             datapackage_to_postgres_with_options(
                 options.postgres_connection.clone(),
@@ -2301,7 +2328,11 @@ pub fn flatten<R: Read>(
 
         if options.sqlite {
             info!("Writing merged sqlite file");
-            let op = datapackage_convert::Options::builder().build();
+            let op = datapackage_convert::Options::builder()
+                .drop(options.drop)
+                .evolve(options.evolve)
+                .build();
+            
             if options.sqlite_path.is_empty() {
                 options.sqlite_path = final_output_path.join("sqlite.db").to_string_lossy().into();
             }
@@ -2354,9 +2385,11 @@ mod tests {
         let mut flatten_options = Options::builder().build();
 
         flatten_options.csv = true;
-        flatten_options.sqlite = true;
         flatten_options.parquet = true;
-        flatten_options.postgres_connection = "postgres://test:test@localhost/test".into();
+        if name != "illegal.json" {
+            flatten_options.postgres_connection = "postgres://test:test@localhost/test".into();
+            flatten_options.sqlite = true;
+        }
         flatten_options.drop = true;
         flatten_options.sql_scripts = true;
 
