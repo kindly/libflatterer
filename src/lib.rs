@@ -512,17 +512,13 @@ impl FlatFiles {
 
     fn set_csv(&mut self) -> Result<()> {
         let csv_path = self.output_dir.join("csv");
-        if self.options.csv {
-            if !csv_path.is_dir() {
-                create_dir_all(&csv_path).context(FlattererCreateDirSnafu {
-                    filename: csv_path.to_string_lossy(),
-                })?;
-            }
-        } else if csv_path.is_dir() {
-            remove_dir_all(&csv_path).context(FlattererRemoveDirSnafu {
+        if !csv_path.is_dir() {
+            create_dir_all(&csv_path).context(FlattererCreateDirSnafu {
                 filename: csv_path.to_string_lossy(),
             })?;
         }
+
+
         Ok(())
     }
 
@@ -1172,7 +1168,6 @@ impl FlatFiles {
             }
 
             let options = datapackage_convert::Options::builder()
-                .delete_input_csv(!self.options.csv)
                 .drop(self.options.drop)
                 .evolve(self.options.evolve)
                 .build();
@@ -1190,7 +1185,6 @@ impl FlatFiles {
         if self.options.parquet {
             self.log_info("Converting to parquet");
             let options = datapackage_convert::Options::builder()
-                .delete_input_csv(!self.options.csv)
                 .build();
             datapackage_to_parquet_with_options(
                 self.output_dir.join("parquet"),
@@ -1203,7 +1197,6 @@ impl FlatFiles {
         if !self.options.postgres_connection.is_empty() {
             self.log_info("Loading data into postgres");
             let options = datapackage_convert::Options::builder()
-                .delete_input_csv(!self.options.csv)
                 .drop(self.options.drop)
                 .evolve(self.options.evolve)
                 .schema(self.options.postgres_schema.clone())
@@ -1224,6 +1217,13 @@ impl FlatFiles {
         self.log_info("Writing metadata files");
 
         write_metadata_csvs_from_datapackage(self.output_dir.clone())?;
+
+        let csv_path = self.output_dir.join("csv");
+        if !self.options.csv && csv_path.is_dir() {
+            remove_dir_all(&csv_path).context(FlattererRemoveDirSnafu {
+                filename: csv_path.to_string_lossy(),
+            })?;
+        }
 
         Ok(())
     }
@@ -1292,12 +1292,11 @@ impl FlatFiles {
                     .unwrap()
                     .insert("foreignKeys".into(), foreign_keys.into());
             }
-            if self.options.csv {
-                resource.as_object_mut().unwrap().insert(
-                    "path".to_string(),
-                    Value::String(format!("csv/{}.csv", table_title)),
-                );
-            }
+
+            resource.as_object_mut().unwrap().insert(
+                "path".to_string(),
+                Value::String(format!("csv/{}.csv", table_title)),
+            );
 
             resources.push(resource)
         }
