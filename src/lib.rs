@@ -1147,7 +1147,7 @@ impl FlatFiles {
 
         self.write_data_package(false)?;
 
-        if self.options.csv || self.options.parquet || !self.options.postgres_connection.is_empty()
+        if self.options.csv || self.options.parquet || !self.options.postgres_connection.is_empty() || self.options.sqlite || !self.options.sqlite_path.is_empty()
         {
             self.write_csvs()?;
         };
@@ -1161,7 +1161,7 @@ impl FlatFiles {
             self.write_xlsx()?;
         };
 
-        if self.options.sqlite {
+        if self.options.sqlite || !self.options.sqlite_path.is_empty() {
             self.log_info("Loading data into sqlite");
 
             self.write_data_package(true)?;
