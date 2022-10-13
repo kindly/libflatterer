@@ -68,39 +68,64 @@
 
 mod guess_array;
 mod postgresql;
+
+#[cfg(not(target_family = "wasm"))]
 mod schema_analysis;
+
+#[cfg(not(target_family = "wasm"))]
 mod yajlparser;
 
 use indexmap::IndexMap as HashMap;
 use indexmap::IndexSet as Set;
+
+#[cfg(not(target_family = "wasm"))]
 use std::convert::TryInto;
 use std::fmt;
 use std::fs::{create_dir_all, remove_dir_all, File};
-use std::io::{self, BufRead, BufReader, Read, Write};
+
+#[cfg(not(target_family = "wasm"))]
+use std::io::{BufRead};
+use std::io::{BufReader, Read, Write};
+
+#[cfg(not(target_family = "wasm"))]
+use std::io::{self};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[cfg(not(target_family = "wasm"))]
 use std::{panic, thread};
 
+#[cfg(not(target_family = "wasm"))]
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
+
+#[cfg(not(target_family = "wasm"))]
 use datapackage_convert::{
     datapackage_to_parquet_with_options, datapackage_to_postgres_with_options,
     datapackage_to_sqlite_with_options, datapackage_to_xlsx_with_options,
     merge_datapackage_with_options,
 };
+
 pub use guess_array::guess_array;
 use itertools::Itertools;
-use log::{info, warn};
+use log::info;
+#[cfg(not(target_family = "wasm"))]
+use log::warn;
 use regex::Regex;
+#[cfg(not(target_family = "wasm"))]
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{json, Map, Value, Deserializer};
 use smallvec::{smallvec, SmallVec};
 use smartstring::alias::String as SmartString;
 use snafu::{Backtrace, ResultExt, Snafu};
 use typed_builder::TypedBuilder;
+
+#[cfg(not(target_family = "wasm"))]
 use xlsxwriter::Workbook;
+#[cfg(not(target_family = "wasm"))]
 use yajlish::Parser;
+#[cfg(not(target_family = "wasm"))]
 use yajlparser::Item;
 
 lazy_static::lazy_static! {
@@ -146,6 +171,7 @@ pub enum Error {
     XLSXTooManyColumns { columns: usize, sheet: String },
     #[snafu(display("Terminated"))]
     Terminated {},
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Json Dereferencing Failed"))]
     JSONRefError { source: schema_analysis::Error },
     #[snafu(display("Error writing to CSV file {}", filepath.to_string_lossy()))]
@@ -178,6 +204,7 @@ pub enum Error {
         source: serde_json::Error,
         backtrace: Backtrace,
     },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("{}", source))]
     DatapackageConvertError {
         source: datapackage_convert::Error,
@@ -187,20 +214,26 @@ pub enum Error {
     SerdeReadError { source: serde_json::Error },
     #[snafu(display("Serde Error: {}", message))]
     FlattererProcessError { message: String },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Error with writing XLSX file"))]
     FlattererXLSXError { source: xlsxwriter::XlsxError },
     #[snafu(display("Could not convert usize to int"))]
     FlattererIntError { source: std::num::TryFromIntError },
     #[snafu(display("YAJLish parse error: {}", error))]
     YAJLishParseError { error: String },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
     ChannelSendError { source: SendError<Value> },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
     ChannelItemError { source: SendError<Item> },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
     ChannelBufSendError { source: SendError<(Vec<u8>, bool)> },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
     ChannelStopSendError { source: SendError<()> },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("{}", source))]
     RusqliteError { source: rusqlite::Error },
 }
@@ -225,7 +258,9 @@ impl fmt::Display for PathItem {
 
 #[derive(Debug)]
 enum TmpCSVWriter {
+    #[cfg(not(target_family = "wasm"))]
     Disk(csv::Writer<File>),
+    Memory(csv::Writer<Vec<u8>>),
     None(),
 }
 
@@ -321,6 +356,8 @@ pub struct Options {
     /// evolve data withing sqlite and postgres db 
     #[builder(default)]
     pub evolve: bool,
+    #[builder(default)]
+    pub memory: bool
 }
 
 #[derive(Debug)]
@@ -341,6 +378,9 @@ pub struct FlatFiles {
     order_map: HashMap<String, usize>,
     field_titles_map: HashMap<String, String>,
     table_order: HashMap<String, String>,
+    tmp_memory: HashMap<String, Vec<u8>>,
+    pub csv_memory: HashMap<String, Vec<u8>>,
+    pub files_memory: HashMap<String, Vec<u8>>,
 }
 
 #[derive(Serialize, Debug)]
@@ -408,11 +448,14 @@ struct TablesRecord {
     table_title: String,
 }
 
+#[cfg(not(target_family = "wasm"))]
 struct JLWriter {
     pub buf: Vec<u8>,
     pub buf_sender: Sender<(Vec<u8>, bool)>,
 }
 
+
+#[cfg(not(target_family = "wasm"))]
 impl Write for JLWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         if buf == [b'\n'] {
@@ -440,25 +483,33 @@ impl Write for JLWriter {
 impl FlatFiles {
     pub fn new_with_defaults(output_dir: String) -> Result<Self> {
         let options = Options::builder().build();
-        FlatFiles::new(output_dir, options)
+        Self::new(output_dir, options)
     }
 
     pub fn new(output_dir: String, mut options: Options) -> Result<Self> {
-        let output_path = PathBuf::from(output_dir.clone());
-        if output_path.is_dir() {
-            if options.force {
-                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                    filename: output_path.to_string_lossy(),
-                })?;
-            } else {
-                return Err(Error::FlattererDirExists { dir: output_path });
-            }
+        
+        #[cfg(target_family = "wasm")]
+        {
+            options.memory = true;
         }
 
-        let tmp_path = output_path.join("tmp");
-        create_dir_all(&tmp_path).context(FlattererCreateDirSnafu {
-            filename: tmp_path.to_string_lossy(),
-        })?;
+        if !options.memory {
+            let output_path = PathBuf::from(output_dir.clone());
+            if output_path.is_dir() {
+                if options.force {
+                    remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
+                        filename: output_path.to_string_lossy(),
+                    })?;
+                } else {
+                    return Err(Error::FlattererDirExists { dir: output_path });
+                }
+            }
+
+            let tmp_path = output_path.join("tmp");
+            create_dir_all(&tmp_path).context(FlattererCreateDirSnafu {
+                filename: tmp_path.to_string_lossy(),
+            })?;
+        }
 
         let smallvec_emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]> = smallvec![];
 
@@ -468,11 +519,13 @@ impl FlatFiles {
         ]
         .concat();
 
+        #[cfg(not(target_family = "wasm"))]
         if options.evolve && options.id_prefix.is_empty(){
             options.id_prefix = format!("{}.", nanoid::nanoid!(10));
         }
 
-        let mut flat_files = FlatFiles {
+
+        let mut flat_files = Self {
             output_dir: output_dir.into(),
             options,
             main_table_name,
@@ -489,10 +542,15 @@ impl FlatFiles {
             order_map: HashMap::new(),
             field_titles_map: HashMap::new(),
             table_order: HashMap::new(),
+            tmp_memory: HashMap::new(),
+            csv_memory: HashMap::new(),
+            files_memory: HashMap::new()
         };
 
+        #[cfg(not(target_family = "wasm"))]
         flat_files.set_csv()?;
 
+        #[cfg(not(target_family = "wasm"))]
         if !flat_files.options.schema.is_empty() {
             flat_files.set_schema()?;
         };
@@ -510,6 +568,7 @@ impl FlatFiles {
         Ok(flat_files)
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn set_csv(&mut self) -> Result<()> {
         let csv_path = self.output_dir.join("csv");
         if !csv_path.is_dir() {
@@ -518,10 +577,10 @@ impl FlatFiles {
             })?;
         }
 
-
         Ok(())
     }
 
+    #[cfg(not(target_family = "wasm"))]
     fn set_schema(&mut self) -> Result<()> {
         let schema_analysis = schema_analysis::schema_analysis(
             &self.options.schema,
@@ -852,18 +911,32 @@ impl FlatFiles {
                     || self.options.parquet
                     || !self.options.postgres_connection.is_empty()
                 {
-                    let output_path = self.output_dir.join(format!("tmp/{}.csv", table));
-                    self.tmp_csvs.insert(
-                        table.clone(),
-                        TmpCSVWriter::Disk(
-                            WriterBuilder::new()
-                                .flexible(true)
-                                .from_path(output_path.clone())
-                                .context(FlattererCSVWriteSnafu {
-                                    filepath: &output_path,
-                                })?,
-                        ),
-                    );
+
+                    if self.options.memory {
+                        self.tmp_csvs.insert(
+                            table.clone(),
+                            TmpCSVWriter::Memory(
+                                WriterBuilder::new()
+                                    .flexible(true)
+                                    .from_writer(vec![])
+                            ),
+                        );
+                    } else {
+                        #[cfg(not(target_family = "wasm"))]
+                        let output_path = self.output_dir.join(format!("tmp/{}.csv", table));
+                        #[cfg(not(target_family = "wasm"))]
+                        self.tmp_csvs.insert(
+                            table.clone(),
+                            TmpCSVWriter::Disk(
+                                WriterBuilder::new()
+                                    .flexible(true)
+                                    .from_path(output_path.clone())
+                                    .context(FlattererCSVWriteSnafu {
+                                        filepath: &output_path,
+                                    })?,
+                            ),
+                        );
+                    }
                 } else {
                     self.tmp_csvs.insert(table.clone(), TmpCSVWriter::None());
                 }
@@ -930,7 +1003,16 @@ impl FlatFiles {
                 }
                 if !output_row.is_empty() {
                     table_metadata.rows += 1;
+
+                    #[cfg(not(target_family = "wasm"))]
                     if let TmpCSVWriter::Disk(writer) = writer {
+                        writer
+                            .write_record(&output_row)
+                            .context(FlattererCSVWriteSnafu {
+                                filepath: &table_metadata.output_path,
+                            })?;
+                    }
+                    if let TmpCSVWriter::Memory(writer) = writer {
                         writer
                             .write_record(&output_row)
                             .context(FlattererCSVWriteSnafu {
@@ -1133,31 +1215,50 @@ impl FlatFiles {
         self.table_order
             .retain(|key, _| self.table_metadata.contains_key(key));
 
-        for (file, tmp_csv) in self.tmp_csvs.iter_mut() {
-            if let TmpCSVWriter::Disk(tmp_csv) = tmp_csv {
-                tmp_csv.flush().context(FlattererFileWriteSnafu {
-                    filename: file.clone(),
-                })?;
+        
+        if self.options.memory {
+            for (file, tmp_csv) in self.tmp_csvs.drain(..) {
+                if let TmpCSVWriter::Memory(writer) = tmp_csv {
+                    let csv_data = writer.into_inner().unwrap(); // ok as flushing will always work as using memory
+                    self.tmp_memory.insert(file.clone(), csv_data);
+                }
+            }
+        } else {
+            #[cfg(not(target_family = "wasm"))]
+            for (file, tmp_csv) in self.tmp_csvs.iter_mut() {
+                if let TmpCSVWriter::Disk(tmp_csv) = tmp_csv {
+                    tmp_csv.flush().context(FlattererFileWriteSnafu {
+                        filename: file.clone(),
+                    })?;
+                }
             }
         }
+
 
         self.write_data_package(false)?;
 
         if self.options.csv || self.options.parquet || !self.options.postgres_connection.is_empty() || self.options.sqlite || !self.options.sqlite_path.is_empty()
         {
-            self.write_csvs()?;
+            if self.options.memory {
+                self.write_csvs_memory()?;
+            } else {
+                self.write_csvs()?;
+            }
         };
 
-        if self.options.sql_scripts {
+        #[cfg(not(target_family = "wasm"))]
+        if self.options.sql_scripts && !self.options.memory{
             self.write_postgresql()?;
             self.write_sqlite()?;
         }
 
-        if self.options.xlsx {
+        #[cfg(not(target_family = "wasm"))]
+        if self.options.xlsx && !self.options.memory{
             self.write_xlsx()?;
         };
 
-        if self.options.sqlite || !self.options.sqlite_path.is_empty() {
+        #[cfg(not(target_family = "wasm"))]
+        if (self.options.sqlite || !self.options.sqlite_path.is_empty()) && !self.options.memory{
             self.log_info("Loading data into sqlite");
 
             self.write_data_package(true)?;
@@ -1182,7 +1283,8 @@ impl FlatFiles {
             self.write_data_package(false)?;
         };
 
-        if self.options.parquet {
+        #[cfg(not(target_family = "wasm"))]
+        if self.options.parquet && !self.options.memory{
             self.log_info("Converting to parquet");
             let options = datapackage_convert::Options::builder()
                 .build();
@@ -1194,7 +1296,8 @@ impl FlatFiles {
             .context(DatapackageConvertSnafu {})?;
         };
 
-        if !self.options.postgres_connection.is_empty() {
+        #[cfg(not(target_family = "wasm"))]
+        if !self.options.postgres_connection.is_empty() && !self.options.memory{
             self.log_info("Loading data into postgres");
             let options = datapackage_convert::Options::builder()
                 .drop(self.options.drop)
@@ -1209,32 +1312,33 @@ impl FlatFiles {
             .context(DatapackageConvertSnafu {})?;
         };
 
-        let tmp_path = self.output_dir.join("tmp");
 
-        if remove_dir_all(&tmp_path).is_err() {
-            log::warn!("Temp files can not be deleted, continuing anyway");
-        }
-        self.log_info("Writing metadata files");
+        if self.options.memory {
+            let (tables_csv, fields_csv) = write_metadata_csvs_memory_datapackage(self.files_memory["datapackage.json"].clone())?;
+            self.files_memory.insert("tables.csv".into(), tables_csv);
+            self.files_memory.insert("fields.csv".into(), fields_csv);
+        } else {
+            let tmp_path = self.output_dir.join("tmp");
 
-        write_metadata_csvs_from_datapackage(self.output_dir.clone())?;
+            if remove_dir_all(&tmp_path).is_err() {
+                log::warn!("Temp files can not be deleted, continuing anyway");
+            }
+            self.log_info("Writing metadata files");
 
-        let csv_path = self.output_dir.join("csv");
-        if !self.options.csv && csv_path.is_dir() {
-            remove_dir_all(&csv_path).context(FlattererRemoveDirSnafu {
-                filename: csv_path.to_string_lossy(),
-            })?;
+            write_metadata_csvs_from_datapackage(self.output_dir.clone())?;
+
+            let csv_path = self.output_dir.join("csv");
+            if !self.options.csv && csv_path.is_dir() {
+                remove_dir_all(&csv_path).context(FlattererRemoveDirSnafu {
+                    filename: csv_path.to_string_lossy(),
+                })?;
+            }
         }
 
         Ok(())
     }
 
     pub fn write_data_package(&mut self, lowercase_names: bool) -> Result<()> {
-        let metadata_file = File::create(self.output_dir.join("datapackage.json")).context(
-            FlattererFileWriteSnafu {
-                filename: "datapackage.json",
-            },
-        )?;
-
         let mut resources = vec![];
 
         for (table_name, table_title) in self.table_order.iter() {
@@ -1306,77 +1410,108 @@ impl FlatFiles {
             "resources": resources
         });
 
-        serde_json::to_writer_pretty(metadata_file, &data_package).context(SerdeWriteSnafu {
-            filename: "datapackage.json",
-        })?;
-
-        Ok(())
-    }
-
-    pub fn write_tables_csv(&mut self) -> Result<()> {
-        let filepath = self.output_dir.join("tables.csv");
-        let mut table_writer = Writer::from_path(&filepath).context(FlattererCSVWriteSnafu {
-            filepath: filepath.clone(),
-        })?;
-        table_writer
-            .write_record(["table_name", "table_title"])
-            .context(FlattererCSVWriteSnafu {
-                filepath: filepath.clone(),
+        if self.options.memory {
+            let mut datapackage = vec![];
+            serde_json::to_writer_pretty(&mut datapackage, &data_package).context(SerdeWriteSnafu {
+                filename: "",
             })?;
-        for (table_name, table_title) in self.table_order.iter() {
-            let metadata = self.table_metadata.get(table_name).unwrap();
-            if metadata.rows == 0 || metadata.ignore {
-                continue;
-            }
-            table_writer
-                .write_record([table_name, table_title])
-                .context(FlattererCSVWriteSnafu {
-                    filepath: filepath.clone(),
-                })?;
+            self.files_memory.insert("datapackage.json".into(), datapackage);
+        } else {
+            let metadata_file = File::create(self.output_dir.join("datapackage.json")).context(
+                FlattererFileWriteSnafu {
+                    filename: "datapackage.json",
+                },
+            )?;
+            serde_json::to_writer_pretty(metadata_file, &data_package).context(SerdeWriteSnafu {
+                filename: "datapackage.json",
+            })?;
         }
 
         Ok(())
     }
 
-    pub fn write_fields_csv(&mut self) -> Result<()> {
-        let filepath = self.output_dir.join("fields.csv");
-        let mut fields_writer = Writer::from_path(&filepath).context(FlattererCSVWriteSnafu {
-            filepath: filepath.clone(),
-        })?;
 
-        fields_writer
-            .write_record([
-                "table_name",
-                "field_name",
-                "field_type",
-                "field_title",
-                "count",
-            ])
-            .context(FlattererCSVWriteSnafu {
-                filepath: filepath.clone(),
-            })?;
-        for table_name in self.table_order.keys() {
-            let metadata = self.table_metadata.get(table_name).unwrap();
+    pub fn write_csvs_memory(&mut self) -> Result<()> {
+        self.log_info("Writing final CSV files");
+
+        for (table_name, table_title) in self.table_order.iter() {
+            let metadata = self.table_metadata.get(table_name).unwrap(); //key known
             if metadata.rows == 0 || metadata.ignore {
                 continue;
             }
+
+            let row_count = if self.options.preview == 0 {
+                metadata.rows
+            } else {
+                std::cmp::min(self.options.preview, metadata.rows)
+            };
+            self.log_info(&format!(
+                "    Writing {} row(s) to {}.csv",
+                row_count, table_title
+            ));
+
+            let csv_data = self.tmp_memory.get_mut(table_name).unwrap();
+
+            let csv_reader = ReaderBuilder::new()
+                .has_headers(false)
+                .flexible(true)
+                .from_reader(csv_data.as_slice());
+
+            if TERMINATE.load(Ordering::SeqCst) {
+                return Err(Error::Terminated {});
+            };
+
+            let mut csv_writer = WriterBuilder::new().from_writer(vec![]);
+
+            let mut non_ignored_fields = vec![];
+
             let table_order = metadata.order.clone();
+
             for order in table_order {
-                if metadata.ignore_fields[order] {
-                    continue;
+                if !metadata.ignore_fields[order] {
+                    let field = metadata.field_titles[order].clone();
+                    let clean_field = INVALID_REGEX.replace_all(&field, " ");
+                    non_ignored_fields.push(clean_field.to_string())
                 }
-                fields_writer
-                    .write_record([
-                        table_name,
-                        &metadata.fields[order],
-                        &metadata.field_type[order],
-                        &metadata.field_titles[order],
-                        &metadata.field_counts[order].to_string(),
-                    ])
-                    .context(FlattererCSVWriteSnafu {
-                        filepath: filepath.clone(),
-                    })?;
             }
+
+            csv_writer
+                .write_record(&non_ignored_fields)
+                .context(FlattererCSVWriteSnafu {
+                    filepath: "".to_string(),
+                })?;
+
+            let mut output_row = ByteRecord::new();
+
+            for (num, row) in csv_reader.into_byte_records().enumerate() {
+                if self.options.preview != 0 && num == self.options.preview {
+                    break;
+                }
+                let this_row = row.context(FlattererCSVWriteSnafu {
+                    filepath: "".to_string(),
+                })?;
+                let table_order = metadata.order.clone();
+
+                for order in table_order {
+                    if metadata.ignore_fields[order] {
+                        continue;
+                    }
+                    if order >= this_row.len() {
+                        output_row.push_field(b"");
+                    } else {
+                        output_row.push_field(&this_row[order]);
+                    }
+                }
+
+                csv_writer
+                    .write_byte_record(&output_row)
+                    .context(FlattererCSVWriteSnafu {
+                        filepath: "".to_string(),
+                    })?;
+                output_row.clear();
+            }
+
+            self.csv_memory.insert(format!("{}.csv", table_title), csv_writer.into_inner().unwrap());
         }
 
         Ok(())
@@ -1473,6 +1608,7 @@ impl FlatFiles {
         Ok(())
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub fn write_xlsx(&mut self) -> Result<()> {
         self.log_info("Writing final XLSX file");
         let tmp_path = self.output_dir.join("tmp");
@@ -1754,6 +1890,7 @@ impl FlatFiles {
         Ok(())
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub fn write_sqlite_db(&mut self) -> Result<()> {
         self.log_info("Writing SQLite file");
         let mut sqlite_dir_path = self.output_dir.join("sqlite.db");
@@ -1994,6 +2131,68 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     new_parts.join(seperator)
 }
 
+
+pub fn write_metadata_csvs_memory_datapackage(datapackage: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
+
+    let mut fields_writer = Writer::from_writer(vec![]);
+    let mut tables_writer = Writer::from_writer(vec![]);
+
+    let json: Value = serde_json::from_reader(datapackage.as_slice()).context(SerdeReadSnafu {})?;
+
+    let resources = json["resources"].as_array().unwrap();
+
+    fields_writer
+        .write_record([
+            "table_name",
+            "field_name",
+            "field_type",
+            "field_title",
+            "count",
+        ])
+        .context(FlattererCSVWriteSnafu {
+            filepath: PathBuf::new(),
+        })?;
+
+    tables_writer
+        .write_record(["table_name", "table_title"])
+        .context(FlattererCSVWriteSnafu {
+            filepath: PathBuf::new(),
+        })?;
+
+    for resource in resources {
+        tables_writer
+            .write_record([
+                resource["flatterer_name"].as_str().unwrap(),
+                resource["title"].as_str().unwrap(),
+            ])
+            .context(FlattererCSVWriteSnafu {
+                filepath: PathBuf::new(),
+            })?;
+        for field_value in resource["schema"]["fields"].as_array().unwrap() {
+            let field_type = match field_value["type"].as_str().unwrap() {
+                "string" => "text",
+                "datetime" => "date",
+                rest => rest,
+            };
+
+            fields_writer
+                .write_record([
+                    resource["flatterer_name"].as_str().unwrap(),
+                    field_value["name"].as_str().unwrap(),
+                    field_type,
+                    field_value["title"].as_str().unwrap(),
+                    &field_value["count"].as_i64().unwrap().to_string(),
+                ])
+                .context(FlattererCSVWriteSnafu {
+                    filepath: PathBuf::new(),
+                })?;
+        }
+    }
+
+    Ok((tables_writer.into_inner().unwrap(), fields_writer.into_inner().unwrap()))
+}
+
+
 pub fn write_metadata_csvs_from_datapackage(output_dir: PathBuf) -> Result<()> {
     let datapackage_path = output_dir.join("datapackage.json");
 
@@ -2067,6 +2266,82 @@ pub fn write_metadata_csvs_from_datapackage(output_dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
+
+pub fn flatten_to_memory<R: Read>(
+    input: BufReader<R>,
+    mut options: Options,
+) -> Result<FlatFiles> {
+    options.memory = true;
+
+    let options_clone = options.clone();
+
+    let mut flat_files = FlatFiles::new(
+        "".into(),
+        options_clone.clone(),
+    )?;
+
+    let mut count = 0;
+
+    if options.ndjson || options.json_stream {
+        let stream = Deserializer::from_reader(input).into_iter::<Value>();
+
+        for item in  stream {
+            let value = item.context(SerdeReadSnafu {})?;
+
+            if !value.is_object() {
+                return Err(Error::FlattererProcessError {
+                    message: format!(
+                        "Value at array position {} is not an object: value is `{}`",
+                        count, value
+                    ),
+                });
+            }
+            flat_files.process_value(value, vec![]);
+            flat_files.create_rows()?;
+            count += 1;
+            if count % 500000 == 0 {
+                flat_files.log_info(&format!("Processed {} values so far.", count));
+            }
+        }
+    } else {
+        let mut json: Value = serde_json::from_reader(input).context(SerdeReadSnafu {})?;
+        if !options.path.is_empty() {
+            let joined = options.path.join("/");
+            let json_pointer = format!("/{joined}");
+            if let Some(pointed) = json.pointer_mut(&json_pointer) {
+                json = pointed.take();
+            } else {
+                return Err(Error::FlattererProcessError {
+                    message: format!(
+                        "No value at given path"
+                    ),
+                });
+            }
+        }
+
+        if json.is_array() {
+            for value in json.as_array_mut().unwrap() {
+                flat_files.process_value(value.take(), vec![]);
+                flat_files.create_rows()?;
+                count += 1;
+                if count % 500000 == 0 {
+                    flat_files.log_info(&format!("Processed {} values so far.", count));
+                }
+            }
+        } else if json.is_object(){
+            flat_files.process_value(json, vec![]);
+            flat_files.create_rows()?;
+        }
+    }
+
+    flat_files.write_files()?;
+
+    Ok(flat_files)
+
+}
+
+
+#[cfg(not(target_family = "wasm"))]
 pub fn flatten<R: Read>(
     mut input: BufReader<R>,
     output: String,
@@ -2291,6 +2566,7 @@ pub fn flatten<R: Read>(
         }
     }
 
+    #[cfg(not(target_family = "wasm"))]
     if options.threads > 1 {
         let op = datapackage_convert::Options::builder()
             .delete_input_csv(true)
@@ -2932,4 +3208,51 @@ mod tests {
         .unwrap();
 
     }
+
+    fn test_output_memory(file: &str, output: Vec<&str>, mut options: Options) {
+        let name = file.split('/').last().unwrap().to_string();
+
+        options.memory = true;
+        options.csv = true;
+
+        let result = flatten_to_memory(
+            BufReader::new(File::open(file).unwrap()),
+            options,
+        ).unwrap();
+
+        println!("{:?}", result.csv_memory);
+
+        for file in output {
+            let mut lines = vec![];
+
+            let reader = ReaderBuilder::new()
+                .has_headers(false)
+                .from_reader(result.csv_memory[file].as_slice());
+            
+            for line in reader.into_records() {
+                let string_record = line.unwrap();
+                let line_vec: Vec<String> = string_record.into_iter().map(|a| a.to_owned()).collect();
+                lines.push(line_vec)
+            }
+
+            insta::assert_yaml_snapshot!(format!("{file}-{name}"), lines);
+        }
+
+    }
+
+    #[test]
+    fn full_test_in_object_memory() {
+        test_output_memory(
+            "fixtures/basic_in_object.json",
+            vec![
+                "main.csv",
+                "games.csv",
+                "games_platforms.csv",
+                "games_developer.csv",
+            ],
+            Options::builder().build()
+        )
+    }
+
+
 }
