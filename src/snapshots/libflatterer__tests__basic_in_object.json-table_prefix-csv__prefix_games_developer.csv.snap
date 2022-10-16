@@ -1,0 +1,8 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "_link,_link_prefix_games,_link_prefix_main,name"
+- "0.games.0.developer.0,0.games.0,0,deva"
+- "0.games.1.developer.0,0.games.1,0,devb"
+

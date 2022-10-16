@@ -1,0 +1,126 @@
+---
+source: src/lib.rs
+expression: "&value"
+---
+profile: tabular-data-package
+resources:
+  - profile: tabular-data-resource
+    name: prefix_games
+    flatterer_name: prefix_games
+    title: prefix_games
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          count: 2
+        - name: _link_prefix_main
+          title: _link_prefix_main
+          type: string
+          count: 2
+        - name: id
+          title: id
+          type: number
+          count: 2
+        - name: title
+          title: title
+          type: string
+          count: 2
+        - name: releaseDate
+          title: releaseDate
+          type: datetime
+          count: 2
+        - name: rating_code
+          title: rating_code
+          type: string
+          count: 2
+        - name: rating_name
+          title: rating_name
+          type: string
+          count: 2
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_prefix_main
+          reference:
+            resource: prefix_main
+            fields: _link
+    path: csv/prefix_games.csv
+  - profile: tabular-data-resource
+    name: prefix_games_developer
+    flatterer_name: prefix_games_developer
+    title: prefix_games_developer
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          count: 2
+        - name: _link_prefix_games
+          title: _link_prefix_games
+          type: string
+          count: 2
+        - name: _link_prefix_main
+          title: _link_prefix_main
+          type: string
+          count: 2
+        - name: name
+          title: name
+          type: string
+          count: 2
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_prefix_games
+          reference:
+            resource: prefix_games
+            fields: _link
+        - fields: _link_prefix_main
+          reference:
+            resource: prefix_main
+            fields: _link
+    path: csv/prefix_games_developer.csv
+  - profile: tabular-data-resource
+    name: prefix_games_platforms
+    flatterer_name: prefix_games_platforms
+    title: prefix_games_platforms
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          count: 3
+        - name: _link_prefix_games
+          title: _link_prefix_games
+          type: string
+          count: 3
+        - name: _link_prefix_main
+          title: _link_prefix_main
+          type: string
+          count: 3
+        - name: name
+          title: name
+          type: string
+          count: 3
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_prefix_games
+          reference:
+            resource: prefix_games
+            fields: _link
+        - fields: _link_prefix_main
+          reference:
+            resource: prefix_main
+            fields: _link
+    path: csv/prefix_games_platforms.csv
+  - profile: tabular-data-resource
+    name: prefix_main
+    flatterer_name: prefix_main
+    title: prefix_main
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          count: 1
+      primaryKey: _link
+    path: csv/prefix_main.csv
+
