@@ -109,7 +109,6 @@ use datapackage_convert::{
 pub use guess_array::guess_array;
 use itertools::Itertools;
 use log::info;
-#[cfg(not(target_family = "wasm"))]
 use log::warn;
 use regex::Regex;
 #[cfg(not(target_family = "wasm"))]
@@ -326,6 +325,12 @@ pub struct Options {
     #[builder(default)]
     /// `fields.csv` file to use to name fields or remove fields from output
     pub fields_csv: String,
+    #[builder(default)]
+    /// `tables.csv` file to use to name tables or remove tables from output
+    pub tables_csv_string: String,
+    #[builder(default)]
+    /// `fields.csv` file to use to name fields or remove fields from output
+    pub fields_csv_string: String,
     /// Only tables in `tables.csv` will be output
     #[builder(default)]
     pub only_tables: bool,
@@ -557,11 +562,11 @@ impl FlatFiles {
 
         flat_files.set_emit_obj()?;
 
-        if !flat_files.options.tables_csv.is_empty() {
+        if !flat_files.options.tables_csv.is_empty() || !flat_files.options.tables_csv_string.is_empty() {
             flat_files.use_tables_csv()?;
         };
 
-        if !flat_files.options.fields_csv.is_empty() {
+        if !flat_files.options.fields_csv.is_empty() || !flat_files.options.fields_csv_string.is_empty(){
             flat_files.use_fields_csv()?;
         };
 
@@ -856,6 +861,7 @@ impl FlatFiles {
                 obj.insert(
                     [
                         "_link_".to_string(),
+                        self.options.table_prefix.clone(),
                         no_index.iter().join(&self.options.path_separator),
                     ]
                     .concat(),
@@ -1067,10 +1073,16 @@ impl FlatFiles {
     }
 
     pub fn use_tables_csv(&mut self) -> Result<()> {
-        let mut tables_reader =
-            Reader::from_path(&self.options.tables_csv).context(FlattererCSVReadSnafu {
-                filepath: &self.options.tables_csv,
-            })?;
+        let reader: Box<dyn Read>;
+
+        if self.options.tables_csv_string.is_empty() {
+            reader = Box::new(File::open(&self.options.tables_csv).context(FlattererReadSnafu {filepath: PathBuf::from(&self.options.tables_csv)})?);
+        } else {
+            reader = Box::new(self.options.tables_csv_string.as_bytes());
+        }
+
+        let mut tables_reader = Reader::from_reader(reader);
+
         for row in tables_reader.deserialize() {
             let row: TablesRecord = row.context(FlattererCSVReadSnafu {
                 filepath: &self.options.tables_csv,
@@ -1081,10 +1093,15 @@ impl FlatFiles {
     }
 
     pub fn use_fields_csv(&mut self) -> Result<()> {
-        let mut fields_reader =
-            Reader::from_path(&self.options.fields_csv).context(FlattererCSVReadSnafu {
-                filepath: &self.options.fields_csv,
-            })?;
+        let reader: Box<dyn Read>;
+
+        if self.options.fields_csv_string.is_empty() {
+            reader = Box::new(File::open(&self.options.fields_csv).context(FlattererReadSnafu {filepath: PathBuf::from(&self.options.fields_csv)})?);
+        } else {
+            reader = Box::new(self.options.fields_csv_string.as_bytes());
+        }
+
+        let mut fields_reader = Reader::from_reader(reader);
 
         for row in fields_reader.deserialize() {
             let row: FieldsRecord = row.context(FlattererCSVReadSnafu {
@@ -1252,9 +1269,13 @@ impl FlatFiles {
             self.write_sqlite()?;
         }
 
-        #[cfg(not(target_family = "wasm"))]
-        if self.options.xlsx && !self.options.memory{
-            self.write_xlsx()?;
+        if self.options.xlsx {
+            if self.options.memory {
+                self.write_xlsx_memory()?;
+            } else {
+                #[cfg(not(target_family = "wasm"))]
+                self.write_xlsx()?;
+            }
         };
 
         #[cfg(not(target_family = "wasm"))]
@@ -1342,7 +1363,7 @@ impl FlatFiles {
         let mut resources = vec![];
 
         for (table_name, table_title) in self.table_order.iter() {
-            let metadata = self.table_metadata.get(table_name).unwrap();
+            let metadata = self.table_metadata.get(table_name).expect("table should be in metadata");
             let mut fields = vec![];
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1361,7 +1382,7 @@ impl FlatFiles {
                 };
 
                 let field_name = if lowercase_names {&metadata.field_titles_lc[order]} else {&metadata.fields[order]};
-                let field_title = &metadata.fields[order];
+                let field_title = &metadata.field_titles[order];
 
                 let field = json!({
                     "name": field_name,
@@ -1372,7 +1393,7 @@ impl FlatFiles {
                 fields.push(field);
 
                 if field_name.starts_with("_link") && field_name != "_link" {
-                    let foreign_table = self.table_order.get(&field_title[6..]).unwrap();
+                    let foreign_table = self.table_order.get(&field_title[6..]).expect("table should be in table order");
                     foreign_keys.push(
                         json!(
                         {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
@@ -1512,6 +1533,10 @@ impl FlatFiles {
             }
 
             self.csv_memory.insert(format!("{}.csv", table_title), csv_writer.into_inner().unwrap());
+
+            if !self.options.xlsx {
+                self.tmp_memory.remove(table_name);
+            }
         }
 
         Ok(())
@@ -1608,6 +1633,128 @@ impl FlatFiles {
         Ok(())
     }
 
+    pub fn write_xlsx_memory(&mut self) -> Result<()> {
+        self.log_info("Writing final XLSX");
+
+        let mut spreadsheet = umya_spreadsheet::new_file_empty_worksheet();
+
+        for (_table_name, metadata) in self.table_metadata.iter() {
+            if metadata.rows > 100000 || metadata.fields.len() > 65536 {
+                return Ok(())
+            }
+        }
+
+
+        for (table_name, table_title) in self.table_order.iter() {
+
+            let metadata = self.table_metadata.get(table_name).expect("table name should exist"); //key known
+            if metadata.rows == 0 || metadata.ignore {
+                continue;
+            }
+            let mut new_table_title = table_title.clone();
+
+            if table_name != table_title {
+                new_table_title.truncate(31);
+            } else {
+                new_table_title =
+                    truncate_xlsx_title(new_table_title, &self.options.path_separator);
+            }
+
+            let row_count = if self.options.preview == 0 {
+                metadata.rows
+            } else {
+                std::cmp::min(self.options.preview, metadata.rows)
+            };
+            self.log_info(&format!(
+                "    Writing {} row(s) to sheet `{}`",
+                row_count, new_table_title
+            ));
+
+            let worksheet = spreadsheet.new_sheet(new_table_title).expect("spreadheet in memory");
+
+            let csv_data = self.tmp_memory.get_mut(table_name).expect("spreadheet in memory");
+
+            let csv_reader = ReaderBuilder::new()
+                .has_headers(false)
+                .flexible(true)
+                .from_reader(csv_data.as_slice());
+
+
+
+            let mut col_index = 1;
+
+            let table_order = metadata.order.clone();
+
+            for order in table_order {
+                if !metadata.ignore_fields[order] {
+                    let mut title = metadata.field_titles[order].clone();
+                    if INVALID_REGEX.is_match(&title) {
+                        warn!("Characters found in input JSON that are not allowed in XLSX file or could cause issues. Striping these, so output is possible.");
+                        title = INVALID_REGEX.replace_all(&title, "").to_string();
+                    }
+
+                    worksheet.get_cell_by_column_and_row_mut(&col_index, &1).set_value(title);
+                    col_index += 1;
+                }
+            }
+
+            for (row_num, row) in csv_reader.into_records().enumerate() {
+                if self.options.preview != 0 && row_num == self.options.preview {
+                    break;
+                }
+                col_index = 1;
+                let this_row = row.context(FlattererCSVReadSnafu {
+                    filepath: table_name,
+                })?;
+
+                let table_order = metadata.order.clone();
+
+                for order in table_order {
+                    if metadata.ignore_fields[order] {
+                        continue;
+                    }
+                    if order >= this_row.len() {
+                        continue;
+                    }
+
+                    let mut cell = this_row[order].to_string();
+
+                    if INVALID_REGEX.is_match(&cell) {
+                        warn!("Character found in JSON that is not allowed in XLSX file. Removing these so output is possible");
+                        cell = INVALID_REGEX.replace_all(&cell, "").to_string();
+                    }
+
+
+                    worksheet.get_cell_by_column_and_row_mut(&col_index, &(row_num + 2).try_into().expect("row columns shoud exist")).set_value(cell);
+                    // if metadata.field_type[order] == "number" {
+                    //     if let Ok(number) = cell.parse::<f64>() {
+                    //         worksheet.get_cell_by_column_and_row_mut(&(row_num + 1).try_into().unwrap(), &col_index).set_value(number.into());
+
+                    //     } else {
+                    //         worksheet.get_cell_by_column_and_row_mut(&(row_num + 1).try_into().unwrap(), &col_index).set_value(cell);
+                    //     };
+                    // } else {
+                    //     worksheet.get_cell_by_column_and_row_mut(&(row_num + 1).try_into().unwrap(), &col_index).set_value(cell);
+                    // }
+                    col_index += 1
+                }
+            }
+
+            self.tmp_memory.remove(table_name);
+
+        }
+        
+        let mut output = std::io::Cursor::new(vec![]);
+        {
+            umya_spreadsheet::writer::xlsx::write_writer(&spreadsheet, &mut output).expect("xlsx writing should work as its to memory");
+        }
+
+        self.files_memory.insert("output.xlsx".into(), output.into_inner());
+
+    
+        return Ok(())
+    }
+
     #[cfg(not(target_family = "wasm"))]
     pub fn write_xlsx(&mut self) -> Result<()> {
         self.log_info("Writing final XLSX file");
@@ -1621,13 +1768,13 @@ impl FlatFiles {
         );
 
         for (table_name, metadata) in self.table_metadata.iter() {
-            if metadata.rows > 1048575 {
+            if metadata.rows > 65536 {
                 return Err(Error::XLSXTooManyRows {
                     rows: metadata.rows,
                     sheet: table_name.clone(),
                 });
             }
-            if metadata.rows > 65536 {
+            if metadata.fields.len() > 65536 {
                 return Err(Error::XLSXTooManyColumns {
                     columns: metadata.fields.len(),
                     sheet: table_name.clone(),
@@ -2701,6 +2848,11 @@ mod tests {
             flatten_options.id_prefix = id_prefix.into();
             name.push_str("-id_prefix")
         }
+        
+        if let Some(table_prefix) = options["table_prefix"].as_str() {
+            flatten_options.table_prefix = table_prefix.into();
+            name.push_str("-table_prefix")
+        }
 
         if let Some(tables_csv) = options["tables_csv"].as_str() {
             flatten_options.tables_csv = tables_csv.into();
@@ -2735,10 +2887,8 @@ mod tests {
 
         if let Err(error) = result {
             if let Some(error_text) = options["error_text"].as_str() {
-                println!("{}", error);
                 assert!(error.to_string().contains(error_text))
             } else {
-                println!("{:?}", error);
                 panic!(
                     "Error raised and there is no error_text to match it. Error was \n{}",
                     error
@@ -2806,6 +2956,20 @@ mod tests {
                 "csv/games_developer.csv",
             ],
             json!({}),
+        )
+    }
+
+    #[test]
+    fn full_test_in_object_with_prefix() {
+        test_output(
+            "fixtures/basic_in_object.json",
+            vec![
+                "csv/prefix_main.csv",
+                "csv/prefix_games.csv",
+                "csv/prefix_games_platforms.csv",
+                "csv/prefix_games_developer.csv",
+            ],
+            json!({"table_prefix": "prefix_"}),
         )
     }
 
@@ -3213,14 +3377,17 @@ mod tests {
         let name = file.split('/').last().unwrap().to_string();
 
         options.memory = true;
+        options.xlsx = true;
         options.csv = true;
 
+        options.json_stream = true;
+
+        let file_string = std::fs::read_to_string(file).unwrap();
+
         let result = flatten_to_memory(
-            BufReader::new(File::open(file).unwrap()),
+            BufReader::new(file_string.as_bytes()),
             options,
         ).unwrap();
-
-        println!("{:?}", result.csv_memory);
 
         for file in output {
             let mut lines = vec![];
@@ -3235,7 +3402,7 @@ mod tests {
                 lines.push(line_vec)
             }
 
-            insta::assert_yaml_snapshot!(format!("{file}-{name}"), lines);
+            //insta::assert_yaml_snapshot!(format!("{file}-{name}"), lines);
         }
 
     }
@@ -3251,6 +3418,16 @@ mod tests {
                 "games_developer.csv",
             ],
             Options::builder().build()
+        )
+    }
+
+    #[test]
+    fn full_test_in_object_memory_large() {
+        test_output_memory(
+            "FI_ocds_data_202111.json",
+            vec![
+            ],
+            Options::builder().json_stream(true).build()
         )
     }
 

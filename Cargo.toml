@@ -27,6 +27,7 @@ lazy_static = "1"
 #datapackage_convert = {"path"= "../datapackage_convert"}
 typed-builder = "0.10.0"
 num_cpus = "1.13.1"
+umya-spreadsheet = "0.7.2"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom = {version="0", features = ["js"]}
@@ -35,9 +36,9 @@ getrandom = {version="0", features = ["js"]}
 jsonref= "0.4"
 crossbeam-channel="0.5"
 tempfile = "3"
+rusqlite = {version = "0.28.0", features = ["bundled"]}
 datapackage_convert = "0.6.1"
 xlsxwriter = "0.3"
-rusqlite = {version = "0.28.0", features = ["bundled"]}
 nanoid = "0.4.0"
 
 
