@@ -133,13 +133,13 @@ pub enum Error {
     #[snafu(display("Directory `{}` already exists.", dir.to_string_lossy()))]
     FlattererDirExists { dir: PathBuf },
     #[snafu(display(
-        "Output XLSX will have too may rows {} in sheet `{}`, maximum allowed 1048576",
+        "Output XLSX will have too many rows {} in sheet `{}`, maximum allowed 1048576",
         rows,
         sheet
     ))]
     XLSXTooManyRows { rows: usize, sheet: String },
     #[snafu(display(
-        "Output XLSX will have too may columns {} in sheet `{}`, maximum allowed 65536",
+        "Output XLSX will have too many columns {} in sheet `{}`, maximum allowed 65536",
         columns,
         sheet
     ))]
@@ -1491,7 +1491,7 @@ impl FlatFiles {
                     sheet: table_name.clone(),
                 });
             }
-            if metadata.rows > 65536 {
+            if  metadata.fields.len() > 65536 {
                 return Err(Error::XLSXTooManyColumns {
                     columns: metadata.fields.len(),
                     sheet: table_name.clone(),
