@@ -126,6 +126,8 @@ use xlsxwriter::Workbook;
 use yajlish::Parser;
 #[cfg(not(target_family = "wasm"))]
 use yajlparser::Item;
+use flate2::write::GzEncoder;
+use flate2::Compression;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -235,6 +237,11 @@ pub enum Error {
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display("{}", source))]
     RusqliteError { source: rusqlite::Error },
+    #[snafu(display(""))]
+    FlattererCSVIntoInnerError {
+        source: csv::IntoInnerError<Writer<flate2::write::GzEncoder<File>>>,
+        backtrace: Backtrace,
+    },
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
@@ -259,7 +266,7 @@ impl fmt::Display for PathItem {
 enum TmpCSVWriter {
     #[cfg(not(target_family = "wasm"))]
     Disk(csv::Writer<File>),
-    Memory(csv::Writer<Vec<u8>>),
+    Memory(csv::Writer<GzEncoder<Vec<u8>>>),
     None(),
 }
 
@@ -384,7 +391,7 @@ pub struct FlatFiles {
     field_titles_map: HashMap<String, String>,
     table_order: HashMap<String, String>,
     tmp_memory: HashMap<String, Vec<u8>>,
-    pub csv_memory: HashMap<String, Vec<u8>>,
+    pub csv_memory_gz: HashMap<String, Vec<u8>>,
     pub files_memory: HashMap<String, Vec<u8>>,
 }
 
@@ -548,7 +555,7 @@ impl FlatFiles {
             field_titles_map: HashMap::new(),
             table_order: HashMap::new(),
             tmp_memory: HashMap::new(),
-            csv_memory: HashMap::new(),
+            csv_memory_gz: HashMap::new(),
             files_memory: HashMap::new()
         };
 
@@ -919,12 +926,13 @@ impl FlatFiles {
                 {
 
                     if self.options.memory {
+                        let encoder = GzEncoder::new(vec![], Compression::default());
                         self.tmp_csvs.insert(
                             table.clone(),
                             TmpCSVWriter::Memory(
                                 WriterBuilder::new()
                                     .flexible(true)
-                                    .from_writer(vec![])
+                                    .from_writer(encoder)
                             ),
                         );
                     } else {
@@ -1236,7 +1244,8 @@ impl FlatFiles {
         if self.options.memory {
             for (file, tmp_csv) in self.tmp_csvs.drain(..) {
                 if let TmpCSVWriter::Memory(writer) = tmp_csv {
-                    let csv_data = writer.into_inner().unwrap(); // ok as flushing will always work as using memory
+                    let gz_writer = writer.into_inner().unwrap(); // ok as flushing will always work as using memory
+                    let csv_data = gz_writer.finish().unwrap();
                     self.tmp_memory.insert(file.clone(), csv_data);
                 }
             }
@@ -1471,18 +1480,21 @@ impl FlatFiles {
                 row_count, table_title
             ));
 
-            let csv_data = self.tmp_memory.get_mut(table_name).unwrap();
+            let csv_gz_data = self.tmp_memory.get_mut(table_name).unwrap();
+
+            let reader = flate2::read::GzDecoder::new(csv_gz_data.as_slice());
 
             let csv_reader = ReaderBuilder::new()
                 .has_headers(false)
                 .flexible(true)
-                .from_reader(csv_data.as_slice());
+                .from_reader(reader);
 
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
             };
 
-            let mut csv_writer = WriterBuilder::new().from_writer(vec![]);
+            let encoder = GzEncoder::new(vec![], Compression::default());
+            let mut csv_writer = WriterBuilder::new().from_writer(encoder);
 
             let mut non_ignored_fields = vec![];
 
@@ -1532,7 +1544,11 @@ impl FlatFiles {
                 output_row.clear();
             }
 
-            self.csv_memory.insert(format!("{}.csv", table_title), csv_writer.into_inner().unwrap());
+            self.csv_memory_gz.insert(format!("{}.csv", table_title), csv_writer
+                .into_inner()
+                .expect("write to csv should be safe as memory")
+                .finish()
+                .expect("write to csv should be safe as memory"));
 
             if !self.options.xlsx {
                 self.tmp_memory.remove(table_name);
@@ -1672,14 +1688,14 @@ impl FlatFiles {
 
             let worksheet = spreadsheet.new_sheet(new_table_title).expect("spreadheet in memory");
 
-            let csv_data = self.tmp_memory.get_mut(table_name).expect("spreadheet in memory");
+            let csv_gz_data = self.tmp_memory.get_mut(table_name).unwrap();
+
+            let reader = flate2::read::GzDecoder::new(csv_gz_data.as_slice());
 
             let csv_reader = ReaderBuilder::new()
                 .has_headers(false)
                 .flexible(true)
-                .from_reader(csv_data.as_slice());
-
-
+                .from_reader(reader);
 
             let mut col_index = 1;
 
@@ -3377,7 +3393,7 @@ mod tests {
         let name = file.split('/').last().unwrap().to_string();
 
         options.memory = true;
-        options.xlsx = true;
+        // options.xlsx = true;
         options.csv = true;
 
         options.json_stream = true;
@@ -3392,9 +3408,11 @@ mod tests {
         for file in output {
             let mut lines = vec![];
 
+            let reader = flate2::read::GzDecoder::new(result.csv_memory_gz[file].as_slice());
+
             let reader = ReaderBuilder::new()
                 .has_headers(false)
-                .from_reader(result.csv_memory[file].as_slice());
+                .from_reader(reader);
             
             for line in reader.into_records() {
                 let string_record = line.unwrap();

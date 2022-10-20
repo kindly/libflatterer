@@ -28,6 +28,7 @@ lazy_static = "1"
 typed-builder = "0.10.0"
 num_cpus = "1.13.1"
 umya-spreadsheet = "0.7.2"
+flate2 = "1.0.24"
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 getrandom = {version="0", features = ["js"]}
