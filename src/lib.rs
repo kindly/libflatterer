@@ -1280,6 +1280,7 @@ impl FlatFiles {
 
         if self.options.xlsx {
             if self.options.memory {
+                #[cfg(target_family = "wasm")]
                 self.write_xlsx_memory()?;
             } else {
                 #[cfg(not(target_family = "wasm"))]
@@ -1649,6 +1650,7 @@ impl FlatFiles {
         Ok(())
     }
 
+    #[cfg(target_family = "wasm")]
     pub fn write_xlsx_memory(&mut self) -> Result<()> {
         self.log_info("Writing final XLSX");
 
@@ -3420,7 +3422,7 @@ mod tests {
                 lines.push(line_vec)
             }
 
-            //insta::assert_yaml_snapshot!(format!("{file}-{name}"), lines);
+            insta::assert_yaml_snapshot!(format!("{file}-{name}"), lines);
         }
 
     }
@@ -3438,16 +3440,5 @@ mod tests {
             Options::builder().build()
         )
     }
-
-    #[test]
-    fn full_test_in_object_memory_large() {
-        test_output_memory(
-            "FI_ocds_data_202111.json",
-            vec![
-            ],
-            Options::builder().json_stream(true).build()
-        )
-    }
-
 
 }
