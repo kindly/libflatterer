@@ -1,0 +1,7 @@
+---
+source: src/lib.rs
+expression: lines
+---
+- - _link
+- - "0"
+
