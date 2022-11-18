@@ -2585,7 +2585,14 @@ pub fn flatten<R: Read>(
                 .collect_vec();
             let mut count = 0;
             for item in item_receiver.iter() {
-                let value: Value = serde_json::from_str(&item.json).context(SerdeReadSnafu {})?;
+
+                let serde_result = serde_json::from_str(&item.json);
+
+                if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace) {
+                    continue
+                }
+
+                let value: Value = serde_result.context(SerdeReadSnafu {})?;
 
                 if !value.is_object() {
                     return Err(Error::FlattererProcessError {
@@ -2844,6 +2851,11 @@ mod tests {
         if let Some(inline) = options["inline"].as_bool() {
             flatten_options.inline_one_to_one = inline;
             name.push_str("-inline")
+        }
+
+        if let Some(ndjson) = options["ndjson"].as_bool() {
+            flatten_options.ndjson = ndjson;
+            name.push_str("-ndjson")
         }
 
         if let Some(pushdown) = options["pushdown"].as_array() {
@@ -3179,6 +3191,16 @@ mod tests {
                 "csv/sublist1_sublist2.csv",
             ],
             json!({"pushdown": ["a", "b", "c", "d"]}),
+        )
+    }
+
+    #[test]
+    fn test_ndjson_missing_line() {
+        test_output(
+            "fixtures/missing_line.ndjson",
+            vec![
+            ],
+            json!({"ndjson": true}),
         )
     }
 

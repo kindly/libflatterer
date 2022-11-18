@@ -1,0 +1,23 @@
+---
+source: src/lib.rs
+expression: "&value"
+---
+profile: tabular-data-package
+resources:
+  - profile: tabular-data-resource
+    name: main
+    flatterer_name: main
+    title: main
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          count: 2
+        - name: a
+          title: a
+          type: string
+          count: 2
+      primaryKey: _link
+    path: csv/main.csv
+
