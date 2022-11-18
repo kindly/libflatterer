@@ -213,8 +213,10 @@ pub enum Error {
     },
     #[snafu(display("Invalid JSON due to the following error: {}", source))]
     SerdeReadError { source: serde_json::Error },
-    #[snafu(display("Serde Error: {}", message))]
+    #[snafu(display("Error: {}", message))]
     FlattererProcessError { message: String },
+    #[snafu(display("{}", message))]
+    FlattererOSError { message: String },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Error with writing XLSX file"))]
     FlattererXLSXError { source: xlsxwriter::XlsxError },
@@ -944,10 +946,7 @@ impl FlatFiles {
                             TmpCSVWriter::Disk(
                                 WriterBuilder::new()
                                     .flexible(true)
-                                    .from_path(output_path.clone())
-                                    .context(FlattererCSVWriteSnafu {
-                                        filepath: &output_path,
-                                    })?,
+                                    .from_writer(get_writer_from_path(&output_path)?)
                             ),
                         );
                     }
@@ -1592,12 +1591,7 @@ impl FlatFiles {
             if TERMINATE.load(Ordering::SeqCst) {
                 return Err(Error::Terminated {});
             };
-            let mut csv_writer = WriterBuilder::new().from_path(filepath.clone()).context(
-                FlattererCSVWriteSnafu {
-                    filepath: filepath.clone(),
-                },
-            )?;
-
+            let mut csv_writer = WriterBuilder::new().from_writer(get_writer_from_path(&filepath)?);
             let mut non_ignored_fields = vec![];
 
             let table_order = metadata.order.clone();
@@ -2357,21 +2351,31 @@ pub fn write_metadata_csvs_memory_datapackage(datapackage: Vec<u8>) -> Result<(V
     Ok((tables_writer.into_inner().unwrap(), fields_writer.into_inner().unwrap()))
 }
 
+fn get_writer_from_path(path: &PathBuf) -> Result<File> {
+    let writer_res = File::create(path);
+    
+    if let Err(io_error) = &writer_res {
+        if let Some(code) = io_error.raw_os_error(){
+            if code == 24 {
+                return Err(Error::FlattererOSError {
+                    message: "Could not write to file as your operating system says it has too many files open. Try and change limit by setting `ulimit -n 1024`".into()}
+                );
+            }
+        }
+    }
+    writer_res.context(FlattererFileWriteSnafu {
+        filename: path.to_string_lossy(),
+    })
+}
 
 pub fn write_metadata_csvs_from_datapackage(output_dir: PathBuf) -> Result<()> {
     let datapackage_path = output_dir.join("datapackage.json");
 
     let fields_filepath = output_dir.join("fields.csv");
-    let mut fields_writer =
-        Writer::from_path(&fields_filepath).context(FlattererCSVWriteSnafu {
-            filepath: fields_filepath.clone(),
-        })?;
+    let mut fields_writer = Writer::from_writer(get_writer_from_path(&fields_filepath)?);
 
     let tables_filepath = output_dir.join("tables.csv");
-    let mut tables_writer =
-        Writer::from_path(&tables_filepath).context(FlattererCSVWriteSnafu {
-            filepath: tables_filepath.clone(),
-        })?;
+    let mut tables_writer = Writer::from_writer(get_writer_from_path(&tables_filepath)?);
 
     let file = File::open(&datapackage_path).context(FlattererReadSnafu {
         filepath: &datapackage_path,
