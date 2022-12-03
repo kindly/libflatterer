@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.16.1"
+version = "0.17.0"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -38,7 +38,7 @@ jsonref= "0.4"
 crossbeam-channel="0.5"
 tempfile = "3"
 rusqlite = {version = "0.28.0", features = ["bundled"]}
-datapackage_convert = "0.6.1"
+csvs_convert = "0.7.0"
 xlsxwriter = "0.3"
 nanoid = "0.4.0"
 

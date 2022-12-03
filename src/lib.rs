@@ -100,7 +100,7 @@ use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 
 #[cfg(not(target_family = "wasm"))]
-use datapackage_convert::{
+use csvs_convert::{
     datapackage_to_parquet_with_options, datapackage_to_postgres_with_options,
     datapackage_to_sqlite_with_options, datapackage_to_xlsx_with_options,
     merge_datapackage_with_options,
@@ -208,10 +208,10 @@ pub enum Error {
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display("{}", source))]
     DatapackageConvertError {
-        source: datapackage_convert::Error,
+        source: csvs_convert::Error,
         backtrace: Backtrace,
     },
-    #[snafu(display("Invalid JSON due to the following error: {}", source))]
+    #[snafu(display("Invalid JSON following error: {}", source))]
     SerdeReadError { source: serde_json::Error },
     #[snafu(display("Error: {}", message))]
     FlattererProcessError { message: String },
@@ -1298,7 +1298,7 @@ impl FlatFiles {
                 sqlite_dir_path = PathBuf::from(&self.options.sqlite_path);
             }
 
-            let options = datapackage_convert::Options::builder()
+            let options = csvs_convert::Options::builder()
                 .drop(self.options.drop)
                 .evolve(self.options.evolve)
                 .build();
@@ -1316,7 +1316,7 @@ impl FlatFiles {
         #[cfg(not(target_family = "wasm"))]
         if self.options.parquet && !self.options.memory{
             self.log_info("Converting to parquet");
-            let options = datapackage_convert::Options::builder()
+            let options = csvs_convert::Options::builder()
                 .build();
             datapackage_to_parquet_with_options(
                 self.output_dir.join("parquet"),
@@ -1329,7 +1329,7 @@ impl FlatFiles {
         #[cfg(not(target_family = "wasm"))]
         if !self.options.postgres_connection.is_empty() && !self.options.memory{
             self.log_info("Loading data into postgres");
-            let options = datapackage_convert::Options::builder()
+            let options = csvs_convert::Options::builder()
                 .drop(self.options.drop)
                 .evolve(self.options.evolve)
                 .schema(self.options.postgres_schema.clone())
@@ -2592,6 +2592,10 @@ pub fn flatten<R: Read>(
                     continue
                 }
 
+                if serde_result.is_err() && !options_clone.json_stream {
+                    return Err(Error::FlattererProcessError{message: "Error parsing JSON, try the --json-stream option.".into()})
+                }
+
                 let value: Value = serde_result.context(SerdeReadSnafu {})?;
 
                 if !value.is_object() {
@@ -2744,7 +2748,7 @@ pub fn flatten<R: Read>(
 
     #[cfg(not(target_family = "wasm"))]
     if options.threads > 1 {
-        let op = datapackage_convert::Options::builder()
+        let op = csvs_convert::Options::builder()
             .delete_input_csv(true)
             .build();
         info!("Merging results");
@@ -2757,7 +2761,7 @@ pub fn flatten<R: Read>(
 
         if options.parquet {
             info!("Writing merged parquet files");
-            let op = datapackage_convert::Options::builder().build();
+            let op = csvs_convert::Options::builder().build();
             datapackage_to_parquet_with_options(
                 final_output_path.join("parquet"),
                 final_output_path.to_string_lossy().into(),
@@ -2768,7 +2772,7 @@ pub fn flatten<R: Read>(
 
         if !options.postgres_connection.is_empty() {
             info!("Loading data into postgres");
-            let op = datapackage_convert::Options::builder()
+            let op = csvs_convert::Options::builder()
                 .drop(options.drop)
                 .schema(options.postgres_schema.clone())
                 .evolve(options.evolve)
@@ -2783,7 +2787,7 @@ pub fn flatten<R: Read>(
 
         if options.sqlite {
             info!("Writing merged sqlite file");
-            let op = datapackage_convert::Options::builder()
+            let op = csvs_convert::Options::builder()
                 .drop(options.drop)
                 .evolve(options.evolve)
                 .build();
@@ -2801,7 +2805,7 @@ pub fn flatten<R: Read>(
 
         if options.xlsx {
             info!("Writing merged xlsx file");
-            let op = datapackage_convert::Options::builder().build();
+            let op = csvs_convert::Options::builder().build();
 
             datapackage_to_xlsx_with_options(
                 final_output_path
