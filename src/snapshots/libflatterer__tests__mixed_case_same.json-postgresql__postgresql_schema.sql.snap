@@ -1,8 +1,6 @@
 ---
 source: src/lib.rs
-assertion_line: 1898
 expression: output
-
 ---
 - "CREATE TABLE \"main\"("
 - "    \"_link\" TEXT,"

@@ -1,8 +1,6 @@
 ---
 source: src/lib.rs
-assertion_line: 2209
 expression: "&value"
-
 ---
 profile: tabular-data-package
 resources:
@@ -15,26 +13,32 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 2
         - name: id
           title: id
           type: number
+          format: number
           count: 2
         - name: title
           title: title
           type: string
+          format: string
           count: 2
         - name: releaseDate
           title: releaseDate
-          type: datetime
+          type: date
+          format: "%Y-%m-%d"
           count: 2
         - name: rating_code
           title: rating_code
           type: string
+          format: string
           count: 2
         - name: rating_name
           title: rating_name
           type: string
+          format: string
           count: 2
       primaryKey: _link
     path: csv/main.csv
@@ -47,14 +51,17 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 2
         - name: _link_main
           title: _link_main
           type: string
+          format: string
           count: 2
         - name: name
           title: name
           type: string
+          format: string
           count: 2
       primaryKey: _link
       foreignKeys:
@@ -72,14 +79,17 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 3
         - name: _link_main
           title: _link_main
           type: string
+          format: string
           count: 3
         - name: name
           title: name
           type: string
+          format: string
           count: 3
       primaryKey: _link
       foreignKeys:

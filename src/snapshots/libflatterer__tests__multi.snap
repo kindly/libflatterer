@@ -1,8 +1,6 @@
 ---
 source: src/lib.rs
-assertion_line: 2587
 expression: "&value"
-
 ---
 profile: tabular-data-package
 resources:
@@ -15,30 +13,37 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 4999
         - name: time
           title: time
           type: number
+          format: number
           count: 4999
         - name: city_id
           title: city_id
           type: number
+          format: number
           count: 4999
         - name: city_name
           title: city_name
           type: string
+          format: string
           count: 4999
         - name: city_country
           title: city_country
           type: string
+          format: string
           count: 4999
         - name: city_coord_lon
           title: city_coord_lon
           type: number
+          format: number
           count: 4999
         - name: city_coord_lat
           title: city_coord_lat
           type: number
+          format: number
           count: 4999
       primaryKey: _link
     path: csv/main.csv
@@ -51,70 +56,87 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 83192
         - name: _link_main
           title: _link_main
           type: string
+          format: string
           count: 83192
         - name: dt
           title: dt
           type: number
+          format: number
           count: 83192
         - name: rain
           title: rain
           type: number
+          format: number
           count: 50409
         - name: pressure
           title: pressure
           type: number
+          format: number
           count: 83192
         - name: humidity
           title: humidity
           type: number
+          format: number
           count: 83192
         - name: uvi
           title: uvi
           type: number
+          format: number
           count: 83192
         - name: speed
           title: speed
           type: number
+          format: number
           count: 83192
         - name: deg
           title: deg
           type: number
+          format: number
           count: 83192
         - name: clouds
           title: clouds
           type: number
+          format: number
           count: 83192
         - name: temp_day
           title: temp_day
           type: number
+          format: number
           count: 83192
         - name: temp_min
           title: temp_min
           type: number
+          format: number
           count: 83192
         - name: temp_max
           title: temp_max
           type: number
+          format: number
           count: 83192
         - name: temp_night
           title: temp_night
           type: number
+          format: number
           count: 83192
         - name: temp_eve
           title: temp_eve
           type: number
+          format: number
           count: 83192
         - name: temp_morn
           title: temp_morn
           type: number
+          format: number
           count: 83192
         - name: snow
           title: snow
           type: number
+          format: number
           count: 13273
       primaryKey: _link
       foreignKeys:
@@ -132,30 +154,37 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 83192
         - name: _link_data
           title: _link_data
           type: string
+          format: string
           count: 83192
         - name: _link_main
           title: _link_main
           type: string
+          format: string
           count: 83192
         - name: id
           title: id
           type: number
+          format: number
           count: 83192
         - name: main
           title: main
           type: string
+          format: string
           count: 83192
         - name: description
           title: description
           type: string
+          format: string
           count: 83192
         - name: icon
           title: icon
           type: string
+          format: string
           count: 83192
       primaryKey: _link
       foreignKeys:

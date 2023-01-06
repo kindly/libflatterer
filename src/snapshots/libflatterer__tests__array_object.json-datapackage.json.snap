@@ -1,8 +1,6 @@
 ---
 source: src/lib.rs
-assertion_line: 2209
 expression: "&value"
-
 ---
 profile: tabular-data-package
 resources:
@@ -14,11 +12,13 @@ resources:
       fields:
         - name: _link
           title: _link
-          type: string
+          type: integer
+          format: integer
           count: 1
         - name: aaa_foo
           title: aaa_foo
           type: string
+          format: string
           count: 1
       primaryKey: _link
     path: csv/main.csv

@@ -1,14 +1,8 @@
 ---
 source: src/lib.rs
 expression: "&flat_files.table_metadata"
-
 ---
 main:
-  field_type:
-    - text
-    - number
-    - text
-    - text
   fields:
     - id
     - e_ea
@@ -41,11 +35,6 @@ main:
   output_path: "[path]"
   field_titles_lc: []
 e:
-  field_type:
-    - number
-    - text
-    - text
-    - text
   fields:
     - ea
     - eb

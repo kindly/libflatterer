@@ -103,16 +103,17 @@ use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 use csvs_convert::{
     datapackage_to_parquet_with_options, datapackage_to_postgres_with_options,
     datapackage_to_sqlite_with_options, datapackage_to_xlsx_with_options,
-    merge_datapackage_with_options,
+    merge_datapackage_with_options
+};
+
+use csvs_convert::{
+    Describer, DescriberOptions
 };
 
 pub use guess_array::guess_array;
 use itertools::Itertools;
 use log::info;
 use log::warn;
-use regex::Regex;
-#[cfg(not(target_family = "wasm"))]
-use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Deserializer, Map, Value};
 use smallvec::{smallvec, SmallVec};
@@ -383,7 +384,6 @@ pub struct FlatFiles {
     row_number: usize,
     sub_array_row_number: usize,
     current_path: Vec<SmartString>,
-    date_regexp: Regex,
     table_rows: HashMap<String, Vec<Map<String, Value>>>,
     tmp_csvs: HashMap<String, TmpCSVWriter>,
     table_metadata: HashMap<String, TableMetadata>,
@@ -399,7 +399,6 @@ pub struct FlatFiles {
 
 #[derive(Serialize, Debug)]
 struct TableMetadata {
-    field_type: Vec<String>,
     fields: Vec<String>,
     fields_set: Set<String>,
     field_counts: Vec<u32>,
@@ -411,6 +410,8 @@ struct TableMetadata {
     table_name_with_separator: String,
     output_path: PathBuf,
     field_titles_lc: Vec<String>,
+    #[serde(skip_serializing)]
+    describers: Vec<Describer>,
 }
 
 impl TableMetadata {
@@ -435,7 +436,6 @@ impl TableMetadata {
             fields: vec![],
             fields_set: Set::new(),
             field_counts: vec![],
-            field_type: vec![],
             rows: 0,
             ignore: false,
             ignore_fields: vec![],
@@ -444,6 +444,7 @@ impl TableMetadata {
             table_name_with_separator,
             output_path,
             field_titles_lc: vec![],
+            describers: vec![]
         }
     }
 }
@@ -452,7 +453,6 @@ impl TableMetadata {
 struct FieldsRecord {
     table_name: String,
     field_name: String,
-    field_type: Option<String>,
     field_title: Option<String>,
 }
 
@@ -544,7 +544,6 @@ impl FlatFiles {
             row_number: 0,
             sub_array_row_number: 0,
             current_path: vec![],
-            date_regexp: Regex::new(r"^([1-3]\d{3})-(\d{2})-(\d{2})([T ](\d{2}):(\d{2}):(\d{2}(?:\.\d*)?)((-(\d{2}):(\d{2})|Z)?))?$").unwrap(),
             table_rows: HashMap::new(),
             tmp_csvs: HashMap::new(),
             table_metadata: HashMap::new(),
@@ -985,12 +984,12 @@ impl FlatFiles {
                 for (num, field) in table_metadata.fields.iter().enumerate() {
                     if let Some(value) = row.get_mut(field) {
                         table_metadata.field_counts[num] += 1;
-                        output_row.push(value_convert(
+                        let string_value = value_convert(
                             value.take(),
-                            &mut table_metadata.field_type,
+                            &mut table_metadata.describers,
                             num,
-                            &self.date_regexp,
-                        ));
+                        );
+                        output_row.push(string_value);
                     } else {
                         output_row.push("".to_string());
                     }
@@ -1000,8 +999,8 @@ impl FlatFiles {
                         table_metadata.fields.push(key.clone());
                         table_metadata.fields_set.insert(key.clone());
                         table_metadata.field_counts.push(1);
-                        table_metadata.field_type.push("".to_string());
                         table_metadata.ignore_fields.push(false);
+                        table_metadata.describers.push(Describer::new_with_options(DescriberOptions::builder().build()));
                         let full_path =
                             format!("{}{}", table_metadata.table_name_with_separator, key);
 
@@ -1013,9 +1012,8 @@ impl FlatFiles {
 
                         output_row.push(value_convert(
                             value.take(),
-                            &mut table_metadata.field_type,
+                            &mut table_metadata.describers,
                             table_metadata.fields.len() - 1,
-                            &self.date_regexp,
                         ));
                     }
                 }
@@ -1149,9 +1147,7 @@ impl FlatFiles {
             table_metadata.fields.push(row.field_name.clone());
             table_metadata.fields_set.insert(row.field_name.clone());
             table_metadata.field_counts.push(0);
-            table_metadata
-                .field_type
-                .push(row.field_type.unwrap_or_else(|| "".to_string()));
+            table_metadata.describers.push(Describer::new());
             table_metadata.ignore_fields.push(false);
             match row.field_title {
                 Some(field_title) => table_metadata.field_titles.push(field_title),
@@ -1387,10 +1383,7 @@ impl FlatFiles {
         let mut resources = vec![];
 
         for (table_name, table_title) in self.table_order.iter() {
-            let metadata = self
-                .table_metadata
-                .get(table_name)
-                .expect("table should be in metadata");
+            let metadata = self.table_metadata.get_mut(table_name).expect("table should be in metadata");
             let mut fields = vec![];
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1402,23 +1395,15 @@ impl FlatFiles {
                 if metadata.ignore_fields[order] {
                     continue;
                 }
-                let data_type = match metadata.field_type[order].as_str() {
-                    "text" => "string",
-                    "date" => "datetime",
-                    rest => rest,
-                };
-
-                let field_name = if lowercase_names {
-                    &metadata.field_titles_lc[order]
-                } else {
-                    &metadata.fields[order]
-                };
+                let (data_type, format) = metadata.describers.get_mut(order).unwrap().guess_type();
+                let field_name = if lowercase_names {&metadata.field_titles_lc[order]} else {&metadata.fields[order]};
                 let field_title = &metadata.field_titles[order];
 
                 let field = json!({
                     "name": field_name,
                     "title": field_title,
                     "type": data_type,
+                    "format": format,
                     "count": metadata.field_counts[order],
                 });
                 fields.push(field);
@@ -1855,8 +1840,10 @@ impl FlatFiles {
             };
             self.log_info(&format!(
                 "    Writing {} row(s) to sheet `{}`",
-                row_count, new_table_title
+                &row_count, &new_table_title
             ));
+
+            let metadata = self.table_metadata.get_mut(table_name).unwrap(); //key known
 
             let mut worksheet = workbook
                 .add_worksheet(Some(&new_table_title))
@@ -1921,7 +1908,7 @@ impl FlatFiles {
                         cell.truncate(32767)
                     }
 
-                    if metadata.field_type[order] == "number" {
+                    if metadata.describers[order].guess_type().0 == "number" {
                         if let Ok(number) = cell.parse::<f64>() {
                             worksheet
                                 .write_number(
@@ -1976,7 +1963,7 @@ impl FlatFiles {
             })?;
 
         for (table_name, table_title) in self.table_order.iter() {
-            let metadata = self.table_metadata.get(table_name).unwrap();
+            let metadata = self.table_metadata.get_mut(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
                 continue;
             }
@@ -1998,7 +1985,7 @@ impl FlatFiles {
                 fields.push(format!(
                     "    \"{}\" {}",
                     metadata.field_titles_lc[order],
-                    postgresql::to_postgresql_type(&metadata.field_type[order])
+                    postgresql::to_postgresql_type(&metadata.describers[order].guess_type().0)
                 ));
             }
             write!(postgresql_schema, "{}", fields.join(",\n")).context(
@@ -2046,7 +2033,7 @@ impl FlatFiles {
         })?;
 
         for (table_name, table_title) in self.table_order.iter() {
-            let metadata = self.table_metadata.get(table_name).unwrap();
+            let metadata = self.table_metadata.get_mut(table_name).unwrap();
             if metadata.rows == 0 || metadata.ignore {
                 continue;
             }
@@ -2068,7 +2055,7 @@ impl FlatFiles {
                 fields.push(format!(
                     "    \"{}\" {}",
                     metadata.field_titles_lc[order],
-                    postgresql::to_postgresql_type(&metadata.field_type[order])
+                    postgresql::to_postgresql_type(&metadata.describers[order].guess_type().0)
                 ));
             }
             write!(sqlite_schema, "{}", fields.join(",\n")).context(FlattererFileWriteSnafu {
@@ -2092,210 +2079,42 @@ impl FlatFiles {
         Ok(())
     }
 
-    #[cfg(not(target_family = "wasm"))]
-    pub fn write_sqlite_db(&mut self) -> Result<()> {
-        self.log_info("Writing SQLite file");
-        let mut sqlite_dir_path = self.output_dir.join("sqlite.db");
-        if !self.options.sqlite_path.is_empty() {
-            sqlite_dir_path = PathBuf::from(&self.options.sqlite_path);
-        }
-        let tmp_path = self.output_dir.join("tmp");
-
-        let mut conn = Connection::open(sqlite_dir_path).context(RusqliteSnafu {})?;
-
-        conn.execute_batch(
-            "PRAGMA journal_mode = OFF;
-             PRAGMA synchronous = 0;
-             PRAGMA locking_mode = EXCLUSIVE;
-             PRAGMA temp_store = MEMORY;",
-        )
-        .context(RusqliteSnafu {})?;
-
-        let mut new_table_order = self
-            .table_order
-            .keys()
-            .cloned()
-            .filter(|table| table != &self.main_table_name)
-            .collect_vec();
-
-        new_table_order.sort_by_key(|a| a.len());
-
-        new_table_order.insert(0, self.main_table_name.clone());
-
-        for table_name in new_table_order.iter() {
-            let table_title = self.table_order.get(table_name).unwrap();
-            let mut output_row = Vec::new();
-            let metadata = self.table_metadata.get(table_name).unwrap();
-            if metadata.rows == 0 || metadata.ignore {
-                continue;
-            }
-            let row_count = if self.options.preview == 0 {
-                metadata.rows
-            } else {
-                std::cmp::min(self.options.preview, metadata.rows)
-            };
-            self.log_info(&format!(
-                "    Writing {} row(s) to table `{}`",
-                row_count, table_title
-            ));
-            let table_order = metadata.order.clone();
-            let mut create_table_sql = String::new();
-            create_table_sql.push_str(&format!("CREATE TABLE [{}](\n", table_title.to_lowercase()));
-
-            let mut fields = Vec::new();
-            let mut indexes = Vec::new();
-            let mut foreign_keys = Vec::new();
-
-            for order in table_order {
-                if metadata.ignore_fields[order] {
-                    continue;
-                }
-                let primary_key = if metadata.fields[order] == "_link" {
-                    " PRIMARY KEY"
-                } else {
-                    ""
-                };
-
-                fields.push(format!(
-                    "    \"{}\" {}{}",
-                    metadata.field_titles_lc[order],
-                    postgresql::to_postgresql_type(&metadata.field_type[order]),
-                    primary_key
-                ));
-                let field_name = &metadata.fields[order];
-                let field_title = &metadata.field_titles_lc[order];
-
-                if field_name.starts_with("_link") && field_name != "_link" {
-                    indexes.push(format!("CREATE INDEX [idx_{table_title}_{field_title}] on [{table_title}]([{field_title}]);"));
-                    let foreign_table = self.table_order.get(&field_name[6..]).unwrap();
-                    foreign_keys.push(format!(
-                        "FOREIGN KEY ([{field_title}]) REFERENCES [{foreign_table}](_link)"
-                    ));
-                }
-            }
-
-            let comma = if foreign_keys.is_empty() { "" } else { ",\n" };
-
-            create_table_sql.push_str(&format!(
-                "{}\n{}{});\n",
-                fields.join(",\n"),
-                comma,
-                foreign_keys.join(",\n")
-            ));
-
-            create_table_sql.push_str(&format!("{}\n\n", indexes.join("\n")));
-
-            log::debug!("create table sql: {create_table_sql}");
-            conn.execute(&create_table_sql, [])
-                .context(RusqliteSnafu {})?;
-
-            let tx = conn.transaction().context(RusqliteSnafu {})?;
-            let mut question_marks =
-                "?,".repeat(metadata.ignore_fields.iter().filter(|i| !*i).count());
-            question_marks.pop();
-
-            {
-                let mut statement = tx
-                    .prepare_cached(&format!(
-                        "INSERT INTO [{table_title}] VALUES ({question_marks})"
-                    ))
-                    .context(RusqliteSnafu {})?;
-
-                let reader_filepath = tmp_path.join(format!("{}.csv", table_name));
-                let csv_reader = ReaderBuilder::new()
-                    .has_headers(false)
-                    .flexible(true)
-                    .from_path(&reader_filepath)
-                    .context(FlattererCSVReadSnafu {
-                        filepath: reader_filepath.to_string_lossy(),
-                    })?;
-
-                if TERMINATE.load(Ordering::SeqCst) {
-                    return Err(Error::Terminated {});
-                };
-
-                for (num, row) in csv_reader.into_deserialize().enumerate() {
-                    if self.options.preview != 0 && num == self.options.preview {
-                        break;
-                    }
-                    let this_row: Vec<String> = row.context(FlattererCSVReadSnafu {
-                        filepath: reader_filepath.to_string_lossy(),
-                    })?;
-                    let table_order = metadata.order.clone();
-
-                    for order in table_order {
-                        if metadata.ignore_fields[order] {
-                            continue;
-                        }
-                        if order >= this_row.len() {
-                            output_row.push("".to_string());
-                        } else {
-                            output_row.push(this_row[order].clone());
-                        }
-                    }
-
-                    statement
-                        .execute(rusqlite::params_from_iter(output_row.iter()))
-                        .context(RusqliteSnafu {})?;
-
-                    output_row.clear();
-                }
-            }
-            tx.commit().context(RusqliteSnafu {})?;
-        }
-
-        Ok(())
-    }
 }
 
 fn value_convert(
     value: Value,
-    field_type: &mut Vec<String>,
+    describers: &mut Vec<Describer>,
     num: usize,
-    date_re: &Regex,
 ) -> String {
-    let value_type = &field_type[num];
+    let describer = &mut describers[num];
 
     match value {
         Value::String(val) => {
-            if value_type != "text" {
-                if date_re.is_match(&val) {
-                    field_type[num] = "date".to_string();
-                } else {
-                    field_type[num] = "text".to_string();
-                }
-            }
+            describer.process(&val);
             val
         }
         Value::Null => {
-            if value_type.is_empty() {
-                field_type[num] = "null".to_string();
-            }
+            describer.process("");
             "".to_string()
         }
         Value::Number(number) => {
-            if value_type != "text" {
-                field_type[num] = "number".to_string();
-            }
+            describer.process_num(number.as_f64().unwrap_or(0_f64));
             number.to_string()
         }
         Value::Bool(bool) => {
-            if value_type != "text" {
-                field_type[num] = "boolean".to_string();
-            }
-            bool.to_string()
+            let string = bool.to_string();
+            describer.process(&string);
+            string
         }
         Value::Array(_) => {
-            if value_type != "text" {
-                field_type[num] = "text".to_string();
-            }
-            format!("{}", value)
+            let string = value.to_string();
+            describer.process(&string);
+            string
         }
         Value::Object(_) => {
-            if value_type != "text" {
-                field_type[num] = "text".to_string();
-            }
-            format!("{}", value)
+            let string = value.to_string();
+            describer.process(&string);
+            string
         }
     }
 }
@@ -2594,7 +2413,7 @@ pub fn flatten<R: Read>(
         let mut output_path = final_output_path.clone();
 
         if options.threads > 1 {
-            options_clone.id_prefix = format!("{}.{}", index, options_clone.id_prefix);
+            options_clone.id_prefix = format!("id-{}.{}", index, options_clone.id_prefix);
             options_clone.csv = true;
             options_clone.xlsx = false;
             options_clone.sqlite = false;
@@ -3457,6 +3276,26 @@ mod tests {
         assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
         assert!(PathBuf::from(tmp_dir.path().join("output.xlsx")).exists());
     }
+
+
+    #[test]
+    fn test_multi_speed() {
+        let options = Options::builder()
+            .json_stream(true)
+            .force(true)
+            .build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        flatten(
+            BufReader::new(File::open("fixtures/daily_16.json").unwrap()), // reader
+            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            options,
+        )
+        .unwrap();
+
+    }
+
 
     #[test]
     fn test_evolve() {

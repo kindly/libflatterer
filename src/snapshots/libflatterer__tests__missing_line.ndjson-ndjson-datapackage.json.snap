@@ -12,11 +12,13 @@ resources:
       fields:
         - name: _link
           title: _link
-          type: string
+          type: integer
+          format: integer
           count: 2
         - name: a
           title: a
           type: string
+          format: string
           count: 2
       primaryKey: _link
     path: csv/main.csv

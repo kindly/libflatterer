@@ -4,7 +4,7 @@ expression: output
 ---
 - "table_name,field_name,field_type,field_title,count"
 - "prefix_games,_link,text,_link,2"
-- "prefix_games,_link_prefix_main,text,_link_prefix_main,2"
+- "prefix_games,_link_prefix_main,integer,_link_prefix_main,2"
 - "prefix_games,id,number,id,2"
 - "prefix_games,title,text,title,2"
 - "prefix_games,releaseDate,date,releaseDate,2"
@@ -12,11 +12,11 @@ expression: output
 - "prefix_games,rating_name,text,rating_name,2"
 - "prefix_games_developer,_link,text,_link,2"
 - "prefix_games_developer,_link_prefix_games,text,_link_prefix_games,2"
-- "prefix_games_developer,_link_prefix_main,text,_link_prefix_main,2"
+- "prefix_games_developer,_link_prefix_main,integer,_link_prefix_main,2"
 - "prefix_games_developer,name,text,name,2"
 - "prefix_games_platforms,_link,text,_link,3"
 - "prefix_games_platforms,_link_prefix_games,text,_link_prefix_games,3"
-- "prefix_games_platforms,_link_prefix_main,text,_link_prefix_main,3"
+- "prefix_games_platforms,_link_prefix_main,integer,_link_prefix_main,3"
 - "prefix_games_platforms,name,text,name,3"
-- "prefix_main,_link,text,_link,1"
+- "prefix_main,_link,integer,_link,1"
 

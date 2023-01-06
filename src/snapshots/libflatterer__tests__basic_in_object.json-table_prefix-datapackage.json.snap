@@ -13,30 +13,37 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 2
         - name: _link_prefix_main
           title: _link_prefix_main
-          type: string
+          type: integer
+          format: integer
           count: 2
         - name: id
           title: id
           type: number
+          format: number
           count: 2
         - name: title
           title: title
           type: string
+          format: string
           count: 2
         - name: releaseDate
           title: releaseDate
-          type: datetime
+          type: date
+          format: "%Y-%m-%d"
           count: 2
         - name: rating_code
           title: rating_code
           type: string
+          format: string
           count: 2
         - name: rating_name
           title: rating_name
           type: string
+          format: string
           count: 2
       primaryKey: _link
       foreignKeys:
@@ -54,18 +61,22 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 2
         - name: _link_prefix_games
           title: _link_prefix_games
           type: string
+          format: string
           count: 2
         - name: _link_prefix_main
           title: _link_prefix_main
-          type: string
+          type: integer
+          format: integer
           count: 2
         - name: name
           title: name
           type: string
+          format: string
           count: 2
       primaryKey: _link
       foreignKeys:
@@ -87,18 +98,22 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 3
         - name: _link_prefix_games
           title: _link_prefix_games
           type: string
+          format: string
           count: 3
         - name: _link_prefix_main
           title: _link_prefix_main
-          type: string
+          type: integer
+          format: integer
           count: 3
         - name: name
           title: name
           type: string
+          format: string
           count: 3
       primaryKey: _link
       foreignKeys:
@@ -119,7 +134,8 @@ resources:
       fields:
         - name: _link
           title: _link
-          type: string
+          type: integer
+          format: integer
           count: 1
       primaryKey: _link
     path: csv/prefix_main.csv

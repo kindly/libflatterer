@@ -12,19 +12,23 @@ resources:
       fields:
         - name: _link
           title: _link
-          type: string
+          type: integer
+          format: integer
           count: 1
         - name: a
           title: a
           type: string
+          format: string
           count: 1
         - name: b
           title: b
           type: string
+          format: string
           count: 1
         - name: c
           title: c
           type: string
+          format: string
           count: 1
       primaryKey: _link
     path: csv/main.csv
@@ -37,30 +41,37 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 2
         - name: _link_main
           title: _link_main
-          type: string
+          type: integer
+          format: integer
           count: 2
         - name: a
           title: a
           type: string
+          format: string
           count: 1
         - name: d
           title: d
           type: string
+          format: string
           count: 1
         - name: main_a
           title: main_a
           type: string
+          format: string
           count: 2
         - name: main_b
           title: main_b
           type: string
+          format: string
           count: 2
         - name: main_c
           title: main_c
           type: string
+          format: string
           count: 2
       primaryKey: _link
       foreignKeys:
@@ -78,38 +89,47 @@ resources:
         - name: _link
           title: _link
           type: string
+          format: string
           count: 2
         - name: _link_sublist1
           title: _link_sublist1
           type: string
+          format: string
           count: 2
         - name: _link_main
           title: _link_main
-          type: string
+          type: integer
+          format: integer
           count: 2
         - name: e
           title: e
           type: string
+          format: string
           count: 2
         - name: main_a
           title: main_a
           type: string
+          format: string
           count: 2
         - name: main_b
           title: main_b
           type: string
+          format: string
           count: 2
         - name: main_c
           title: main_c
           type: string
+          format: string
           count: 2
         - name: sublist1_a
           title: sublist1_a
           type: string
+          format: string
           count: 1
         - name: sublist1_d
           title: sublist1_d
           type: string
+          format: string
           count: 1
       primaryKey: _link
       foreignKeys:
