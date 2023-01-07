@@ -2665,7 +2665,7 @@ pub fn flatten<R: Read>(
                 }
             }
 
-            if count == 0 {
+            if count == 0 && options.threads != 2 {
                 return Err(Error::FlattererProcessError {
                     message: "The JSON provided as input is not an array of objects".to_string(),
                 });
