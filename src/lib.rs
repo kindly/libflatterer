@@ -1780,7 +1780,7 @@ impl FlatFiles {
         );
 
         for (table_name, metadata) in self.table_metadata.iter() {
-            if metadata.rows > 65536 {
+            if metadata.rows > 1048576 {
                 return Err(Error::XLSXTooManyRows {
                     rows: metadata.rows,
                     sheet: table_name.clone(),
@@ -1876,6 +1876,11 @@ impl FlatFiles {
                     if INVALID_REGEX.is_match(&cell) {
                         warn!("Character found in JSON that is not allowed in XLSX file. Removing these so output is possible");
                         cell = INVALID_REGEX.replace_all(&cell, "").to_string();
+                    }
+
+                    if cell.len() > 32767 {
+                        log::warn!("WARNING: Cell larger than 32767 chararcters which is too large for XLSX format. The cell will be truncated, so some data will be missing.");
+                        cell.truncate(32767)
                     }
 
                     if metadata.field_type[order] == "number" {
@@ -2563,6 +2568,7 @@ pub fn flatten<R: Read>(
         if options.threads > 1 {
             options_clone.id_prefix = format!("{}.{}", index, options_clone.id_prefix);
             options_clone.csv = true;
+            options_clone.xlsx= false;
             options_clone.sqlite = false;
             options_clone.parquet = false;
             options_clone.postgres_connection = "".into();
@@ -2834,6 +2840,7 @@ mod tests {
     use super::*;
     use std::fs::{read_to_string, remove_file};
     use tempfile::TempDir;
+    use logtest::Logger;
 
     fn test_output(file: &str, output: Vec<&str>, options: Value) {
         let tmp_dir = TempDir::new().unwrap();
@@ -3339,6 +3346,53 @@ mod tests {
             assert_eq!(truncated_title, case.1);
         }
     }
+
+    #[test]
+    fn test_large_cell() {
+        let options = Options::builder()
+            .force(true)
+            .xlsx(true)
+            .build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        let mut logger = Logger::start();
+
+        flatten(
+            BufReader::new(File::open("fixtures/large_cell.json").unwrap()), // reader
+            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            options,
+        )
+        .unwrap();
+
+        let mut all_logs = vec![];
+        while let Some(log) = logger.pop() {
+            all_logs.push(log.args().to_string())
+        }
+        assert!(all_logs.contains(&"WARNING: Cell larger than 32767 chararcters which is too large for XLSX format. The cell will be truncated, so some data will be missing.".to_string()));
+
+        let options = Options::builder()
+            .force(true)
+            .xlsx(true)
+            .threads(2)
+            .build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        flatten(
+            BufReader::new(File::open("fixtures/large_cell.json").unwrap()), // reader
+            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            options,
+        )
+        .unwrap();
+
+        let mut all_logs = vec![];
+        while let Some(log) = logger.pop() {
+            all_logs.push(log.args().to_string())
+        }
+        assert!(all_logs.contains(&"WARNING: Cell larger than 32767 chararcters which is too large for XLSX format. The cell will be truncated, so some data will be missing.".to_string()))
+    }
+
 
     #[test]
     fn test_multi() {

@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.17.0"
+version = "0.17.1"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -24,7 +24,6 @@ snafu = {version = "0.7.0"}
 indexmap = {version = "1", features = ["serde"] }
 log = "0.4"
 lazy_static = "1"
-#datapackage_convert = {"path"= "../datapackage_convert"}
 typed-builder = "0.10.0"
 num_cpus = "1.13.1"
 flate2 = "1.0.24"
@@ -38,12 +37,11 @@ jsonref= "0.4"
 crossbeam-channel="0.5"
 tempfile = "3"
 rusqlite = {version = "0.28.0", features = ["bundled"]}
-csvs_convert = "0.7.0"
+csvs_convert = "0.7.10"
+#csvs_convert = {"path"= "/projects/datapackage_convert"}
 xlsxwriter = "0.3"
 nanoid = "0.4.0"
 
-
-
-
 [dev-dependencies]
 insta = {version = "1.21.1", features = ["redactions", "yaml"]}
+logtest = "*"
