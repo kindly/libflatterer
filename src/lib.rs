@@ -84,7 +84,7 @@ use std::fmt;
 use std::fs::{create_dir_all, remove_dir_all, File};
 
 #[cfg(not(target_family = "wasm"))]
-use std::io::{BufRead};
+use std::io::BufRead;
 use std::io::{BufReader, Read, Write};
 
 #[cfg(not(target_family = "wasm"))]
@@ -114,20 +114,20 @@ use regex::Regex;
 #[cfg(not(target_family = "wasm"))]
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value, Deserializer};
+use serde_json::{json, Deserializer, Map, Value};
 use smallvec::{smallvec, SmallVec};
 use smartstring::alias::String as SmartString;
 use snafu::{Backtrace, ResultExt, Snafu};
 use typed_builder::TypedBuilder;
 
+use flate2::write::GzEncoder;
+use flate2::Compression;
 #[cfg(not(target_family = "wasm"))]
 use xlsxwriter::Workbook;
 #[cfg(not(target_family = "wasm"))]
 use yajlish::Parser;
 #[cfg(not(target_family = "wasm"))]
 use yajlparser::Item;
-use flate2::write::GzEncoder;
-use flate2::Compression;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -367,11 +367,11 @@ pub struct Options {
     /// sql scripts
     #[builder(default)]
     pub sql_scripts: bool,
-    /// evolve data withing sqlite and postgres db 
+    /// evolve data withing sqlite and postgres db
     #[builder(default)]
     pub evolve: bool,
     #[builder(default)]
-    pub memory: bool
+    pub memory: bool,
 }
 
 #[derive(Debug)]
@@ -468,7 +468,6 @@ struct JLWriter {
     pub buf_sender: Sender<(Vec<u8>, bool)>,
 }
 
-
 #[cfg(not(target_family = "wasm"))]
 impl Write for JLWriter {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -501,7 +500,6 @@ impl FlatFiles {
     }
 
     pub fn new(output_dir: String, mut options: Options) -> Result<Self> {
-        
         #[cfg(target_family = "wasm")]
         {
             options.memory = true;
@@ -534,10 +532,9 @@ impl FlatFiles {
         .concat();
 
         #[cfg(not(target_family = "wasm"))]
-        if options.evolve && options.id_prefix.is_empty(){
+        if options.evolve && options.id_prefix.is_empty() {
             options.id_prefix = format!("{}.", nanoid::nanoid!(10));
         }
-
 
         let mut flat_files = Self {
             output_dir: output_dir.into(),
@@ -571,11 +568,15 @@ impl FlatFiles {
 
         flat_files.set_emit_obj()?;
 
-        if !flat_files.options.tables_csv.is_empty() || !flat_files.options.tables_csv_string.is_empty() {
+        if !flat_files.options.tables_csv.is_empty()
+            || !flat_files.options.tables_csv_string.is_empty()
+        {
             flat_files.use_tables_csv()?;
         };
 
-        if !flat_files.options.fields_csv.is_empty() || !flat_files.options.fields_csv_string.is_empty(){
+        if !flat_files.options.fields_csv.is_empty()
+            || !flat_files.options.fields_csv_string.is_empty()
+        {
             flat_files.use_fields_csv()?;
         };
 
@@ -649,7 +650,14 @@ impl FlatFiles {
                 if table_name.is_empty() {
                     self.set_table_name(&mut table_name, &no_index_path);
                 }
-                new_pushdown_keys.push([table_name.clone(), self.options.path_separator.clone(), key.clone()].concat());
+                new_pushdown_keys.push(
+                    [
+                        table_name.clone(),
+                        self.options.path_separator.clone(),
+                        key.clone(),
+                    ]
+                    .concat(),
+                );
                 new_pushdown_values.push(value.clone());
             }
         }
@@ -926,15 +934,12 @@ impl FlatFiles {
                     || self.options.parquet
                     || !self.options.postgres_connection.is_empty()
                 {
-
                     if self.options.memory {
                         let encoder = GzEncoder::new(vec![], Compression::default());
                         self.tmp_csvs.insert(
                             table.clone(),
                             TmpCSVWriter::Memory(
-                                WriterBuilder::new()
-                                    .flexible(true)
-                                    .from_writer(encoder)
+                                WriterBuilder::new().flexible(true).from_writer(encoder),
                             ),
                         );
                     } else {
@@ -946,7 +951,7 @@ impl FlatFiles {
                             TmpCSVWriter::Disk(
                                 WriterBuilder::new()
                                     .flexible(true)
-                                    .from_writer(get_writer_from_path(&output_path)?)
+                                    .from_writer(get_writer_from_path(&output_path)?),
                             ),
                         );
                     }
@@ -1083,7 +1088,11 @@ impl FlatFiles {
         let reader: Box<dyn Read>;
 
         if self.options.tables_csv_string.is_empty() {
-            reader = Box::new(File::open(&self.options.tables_csv).context(FlattererReadSnafu {filepath: PathBuf::from(&self.options.tables_csv)})?);
+            reader = Box::new(File::open(&self.options.tables_csv).context(
+                FlattererReadSnafu {
+                    filepath: PathBuf::from(&self.options.tables_csv),
+                },
+            )?);
         } else {
             reader = Box::new(self.options.tables_csv_string.as_bytes());
         }
@@ -1103,7 +1112,11 @@ impl FlatFiles {
         let reader: Box<dyn Read>;
 
         if self.options.fields_csv_string.is_empty() {
-            reader = Box::new(File::open(&self.options.fields_csv).context(FlattererReadSnafu {filepath: PathBuf::from(&self.options.fields_csv)})?);
+            reader = Box::new(File::open(&self.options.fields_csv).context(
+                FlattererReadSnafu {
+                    filepath: PathBuf::from(&self.options.fields_csv),
+                },
+            )?);
         } else {
             reader = Box::new(self.options.fields_csv_string.as_bytes());
         }
@@ -1239,7 +1252,6 @@ impl FlatFiles {
         self.table_order
             .retain(|key, _| self.table_metadata.contains_key(key));
 
-        
         if self.options.memory {
             for (file, tmp_csv) in self.tmp_csvs.drain(..) {
                 if let TmpCSVWriter::Memory(writer) = tmp_csv {
@@ -1259,10 +1271,13 @@ impl FlatFiles {
             }
         }
 
-
         self.write_data_package(false)?;
 
-        if self.options.csv || self.options.parquet || !self.options.postgres_connection.is_empty() || self.options.sqlite || !self.options.sqlite_path.is_empty()
+        if self.options.csv
+            || self.options.parquet
+            || !self.options.postgres_connection.is_empty()
+            || self.options.sqlite
+            || !self.options.sqlite_path.is_empty()
         {
             if self.options.memory {
                 self.write_csvs_memory()?;
@@ -1272,7 +1287,7 @@ impl FlatFiles {
         };
 
         #[cfg(not(target_family = "wasm"))]
-        if self.options.sql_scripts && !self.options.memory{
+        if self.options.sql_scripts && !self.options.memory {
             self.write_postgresql()?;
             self.write_sqlite()?;
         }
@@ -1288,7 +1303,7 @@ impl FlatFiles {
         };
 
         #[cfg(not(target_family = "wasm"))]
-        if (self.options.sqlite || !self.options.sqlite_path.is_empty()) && !self.options.memory{
+        if (self.options.sqlite || !self.options.sqlite_path.is_empty()) && !self.options.memory {
             self.log_info("Loading data into sqlite");
 
             self.write_data_package(true)?;
@@ -1314,10 +1329,9 @@ impl FlatFiles {
         };
 
         #[cfg(not(target_family = "wasm"))]
-        if self.options.parquet && !self.options.memory{
+        if self.options.parquet && !self.options.memory {
             self.log_info("Converting to parquet");
-            let options = csvs_convert::Options::builder()
-                .build();
+            let options = csvs_convert::Options::builder().build();
             datapackage_to_parquet_with_options(
                 self.output_dir.join("parquet"),
                 self.output_dir.to_string_lossy().into(),
@@ -1327,7 +1341,7 @@ impl FlatFiles {
         };
 
         #[cfg(not(target_family = "wasm"))]
-        if !self.options.postgres_connection.is_empty() && !self.options.memory{
+        if !self.options.postgres_connection.is_empty() && !self.options.memory {
             self.log_info("Loading data into postgres");
             let options = csvs_convert::Options::builder()
                 .drop(self.options.drop)
@@ -1342,9 +1356,10 @@ impl FlatFiles {
             .context(DatapackageConvertSnafu {})?;
         };
 
-
         if self.options.memory {
-            let (tables_csv, fields_csv) = write_metadata_csvs_memory_datapackage(self.files_memory["datapackage.json"].clone())?;
+            let (tables_csv, fields_csv) = write_metadata_csvs_memory_datapackage(
+                self.files_memory["datapackage.json"].clone(),
+            )?;
             self.files_memory.insert("tables.csv".into(), tables_csv);
             self.files_memory.insert("fields.csv".into(), fields_csv);
         } else {
@@ -1372,7 +1387,10 @@ impl FlatFiles {
         let mut resources = vec![];
 
         for (table_name, table_title) in self.table_order.iter() {
-            let metadata = self.table_metadata.get(table_name).expect("table should be in metadata");
+            let metadata = self
+                .table_metadata
+                .get(table_name)
+                .expect("table should be in metadata");
             let mut fields = vec![];
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1390,7 +1408,11 @@ impl FlatFiles {
                     rest => rest,
                 };
 
-                let field_name = if lowercase_names {&metadata.field_titles_lc[order]} else {&metadata.fields[order]};
+                let field_name = if lowercase_names {
+                    &metadata.field_titles_lc[order]
+                } else {
+                    &metadata.fields[order]
+                };
                 let field_title = &metadata.field_titles[order];
 
                 let field = json!({
@@ -1402,7 +1424,10 @@ impl FlatFiles {
                 fields.push(field);
 
                 if field_name.starts_with("_link") && field_name != "_link" {
-                    let foreign_table = self.table_order.get(&field_title[6..]).expect("table should be in table order");
+                    let foreign_table = self
+                        .table_order
+                        .get(&field_title[6..])
+                        .expect("table should be in table order");
                     foreign_keys.push(
                         json!(
                         {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
@@ -1442,24 +1467,25 @@ impl FlatFiles {
 
         if self.options.memory {
             let mut datapackage = vec![];
-            serde_json::to_writer_pretty(&mut datapackage, &data_package).context(SerdeWriteSnafu {
-                filename: "",
-            })?;
-            self.files_memory.insert("datapackage.json".into(), datapackage);
+            serde_json::to_writer_pretty(&mut datapackage, &data_package)
+                .context(SerdeWriteSnafu { filename: "" })?;
+            self.files_memory
+                .insert("datapackage.json".into(), datapackage);
         } else {
             let metadata_file = File::create(self.output_dir.join("datapackage.json")).context(
                 FlattererFileWriteSnafu {
                     filename: "datapackage.json",
                 },
             )?;
-            serde_json::to_writer_pretty(metadata_file, &data_package).context(SerdeWriteSnafu {
-                filename: "datapackage.json",
-            })?;
+            serde_json::to_writer_pretty(metadata_file, &data_package).context(
+                SerdeWriteSnafu {
+                    filename: "datapackage.json",
+                },
+            )?;
         }
 
         Ok(())
     }
-
 
     pub fn write_csvs_memory(&mut self) -> Result<()> {
         self.log_info("Writing final CSV files");
@@ -1544,11 +1570,14 @@ impl FlatFiles {
                 output_row.clear();
             }
 
-            self.csv_memory_gz.insert(format!("{}.csv", table_title), csv_writer
-                .into_inner()
-                .expect("write to csv should be safe as memory")
-                .finish()
-                .expect("write to csv should be safe as memory"));
+            self.csv_memory_gz.insert(
+                format!("{}.csv", table_title),
+                csv_writer
+                    .into_inner()
+                    .expect("write to csv should be safe as memory")
+                    .finish()
+                    .expect("write to csv should be safe as memory"),
+            );
 
             if !self.options.xlsx {
                 self.tmp_memory.remove(table_name);
@@ -1652,14 +1681,15 @@ impl FlatFiles {
 
         for (_table_name, metadata) in self.table_metadata.iter() {
             if metadata.rows > 100000 || metadata.fields.len() > 65536 {
-                return Ok(())
+                return Ok(());
             }
         }
 
-
         for (table_name, table_title) in self.table_order.iter() {
-
-            let metadata = self.table_metadata.get(table_name).expect("table name should exist"); //key known
+            let metadata = self
+                .table_metadata
+                .get(table_name)
+                .expect("table name should exist"); //key known
             if metadata.rows == 0 || metadata.ignore {
                 continue;
             }
@@ -1682,7 +1712,9 @@ impl FlatFiles {
                 row_count, new_table_title
             ));
 
-            let worksheet = spreadsheet.new_sheet(new_table_title).expect("spreadheet in memory");
+            let worksheet = spreadsheet
+                .new_sheet(new_table_title)
+                .expect("spreadheet in memory");
 
             let csv_gz_data = self.tmp_memory.get_mut(table_name).unwrap();
 
@@ -1705,7 +1737,9 @@ impl FlatFiles {
                         title = INVALID_REGEX.replace_all(&title, "").to_string();
                     }
 
-                    worksheet.get_cell_by_column_and_row_mut(&col_index, &1).set_value(title);
+                    worksheet
+                        .get_cell_by_column_and_row_mut(&col_index, &1)
+                        .set_value(title);
                     col_index += 1;
                 }
             }
@@ -1736,8 +1770,12 @@ impl FlatFiles {
                         cell = INVALID_REGEX.replace_all(&cell, "").to_string();
                     }
 
-
-                    worksheet.get_cell_by_column_and_row_mut(&col_index, &(row_num + 2).try_into().expect("row columns shoud exist")).set_value(cell);
+                    worksheet
+                        .get_cell_by_column_and_row_mut(
+                            &col_index,
+                            &(row_num + 2).try_into().expect("row columns shoud exist"),
+                        )
+                        .set_value(cell);
                     // if metadata.field_type[order] == "number" {
                     //     if let Ok(number) = cell.parse::<f64>() {
                     //         worksheet.get_cell_by_column_and_row_mut(&(row_num + 1).try_into().unwrap(), &col_index).set_value(number.into());
@@ -1753,18 +1791,18 @@ impl FlatFiles {
             }
 
             self.tmp_memory.remove(table_name);
-
         }
-        
+
         let mut output = std::io::Cursor::new(vec![]);
         {
-            umya_spreadsheet::writer::xlsx::write_writer(&spreadsheet, &mut output).expect("xlsx writing should work as its to memory");
+            umya_spreadsheet::writer::xlsx::write_writer(&spreadsheet, &mut output)
+                .expect("xlsx writing should work as its to memory");
         }
 
-        self.files_memory.insert("output.xlsx".into(), output.into_inner());
+        self.files_memory
+            .insert("output.xlsx".into(), output.into_inner());
 
-    
-        return Ok(())
+        return Ok(());
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -2295,9 +2333,7 @@ pub fn truncate_xlsx_title(mut title: String, seperator: &str) -> String {
     new_parts.join(seperator)
 }
 
-
 pub fn write_metadata_csvs_memory_datapackage(datapackage: Vec<u8>) -> Result<(Vec<u8>, Vec<u8>)> {
-
     let mut fields_writer = Writer::from_writer(vec![]);
     let mut tables_writer = Writer::from_writer(vec![]);
 
@@ -2353,14 +2389,17 @@ pub fn write_metadata_csvs_memory_datapackage(datapackage: Vec<u8>) -> Result<(V
         }
     }
 
-    Ok((tables_writer.into_inner().unwrap(), fields_writer.into_inner().unwrap()))
+    Ok((
+        tables_writer.into_inner().unwrap(),
+        fields_writer.into_inner().unwrap(),
+    ))
 }
 
 fn get_writer_from_path(path: &PathBuf) -> Result<File> {
     let writer_res = File::create(path);
-    
+
     if let Err(io_error) = &writer_res {
-        if let Some(code) = io_error.raw_os_error(){
+        if let Some(code) = io_error.raw_os_error() {
             if code == 24 {
                 return Err(Error::FlattererOSError {
                     message: "Could not write to file as your operating system says it has too many files open. Try and change limit by setting `ulimit -n 1024`".into()}
@@ -2440,26 +2479,19 @@ pub fn write_metadata_csvs_from_datapackage(output_dir: PathBuf) -> Result<()> {
     Ok(())
 }
 
-
-pub fn flatten_to_memory<R: Read>(
-    input: BufReader<R>,
-    mut options: Options,
-) -> Result<FlatFiles> {
+pub fn flatten_to_memory<R: Read>(input: BufReader<R>, mut options: Options) -> Result<FlatFiles> {
     options.memory = true;
 
     let options_clone = options.clone();
 
-    let mut flat_files = FlatFiles::new(
-        "".into(),
-        options_clone.clone(),
-    )?;
+    let mut flat_files = FlatFiles::new("".into(), options_clone.clone())?;
 
     let mut count = 0;
 
     if options.ndjson || options.json_stream {
         let stream = Deserializer::from_reader(input).into_iter::<Value>();
 
-        for item in  stream {
+        for item in stream {
             let value = item.context(SerdeReadSnafu {})?;
 
             if !value.is_object() {
@@ -2486,9 +2518,7 @@ pub fn flatten_to_memory<R: Read>(
                 json = pointed.take();
             } else {
                 return Err(Error::FlattererProcessError {
-                    message: format!(
-                        "No value at given path"
-                    ),
+                    message: format!("No value at given path"),
                 });
             }
         }
@@ -2502,7 +2532,7 @@ pub fn flatten_to_memory<R: Read>(
                     flat_files.log_info(&format!("Processed {} values so far.", count));
                 }
             }
-        } else if json.is_object(){
+        } else if json.is_object() {
             flat_files.process_value(json, vec![]);
             flat_files.create_rows()?;
         }
@@ -2511,9 +2541,7 @@ pub fn flatten_to_memory<R: Read>(
     flat_files.write_files()?;
 
     Ok(flat_files)
-
 }
-
 
 #[cfg(not(target_family = "wasm"))]
 pub fn flatten<R: Read>(
@@ -2568,7 +2596,7 @@ pub fn flatten<R: Read>(
         if options.threads > 1 {
             options_clone.id_prefix = format!("{}.{}", index, options_clone.id_prefix);
             options_clone.csv = true;
-            options_clone.xlsx= false;
+            options_clone.xlsx = false;
             options_clone.sqlite = false;
             options_clone.parquet = false;
             options_clone.postgres_connection = "".into();
@@ -2591,15 +2619,17 @@ pub fn flatten<R: Read>(
                 .collect_vec();
             let mut count = 0;
             for item in item_receiver.iter() {
-
                 let serde_result = serde_json::from_str(&item.json);
 
-                if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace) {
-                    continue
+                if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace)
+                {
+                    continue;
                 }
 
                 if serde_result.is_err() && !options_clone.json_stream {
-                    return Err(Error::FlattererProcessError{message: "Error parsing JSON, try the --json-stream option.".into()})
+                    return Err(Error::FlattererProcessError {
+                        message: "Error parsing JSON, try the --json-stream option.".into(),
+                    });
                 }
 
                 let value: Value = serde_result.context(SerdeReadSnafu {})?;
@@ -2797,7 +2827,7 @@ pub fn flatten<R: Read>(
                 .drop(options.drop)
                 .evolve(options.evolve)
                 .build();
-            
+
             if options.sqlite_path.is_empty() {
                 options.sqlite_path = final_output_path.join("sqlite.db").to_string_lossy().into();
             }
@@ -2838,9 +2868,9 @@ pub fn flatten<R: Read>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use logtest::Logger;
     use std::fs::{read_to_string, remove_file};
     use tempfile::TempDir;
-    use logtest::Logger;
 
     fn test_output(file: &str, output: Vec<&str>, options: Value) {
         let tmp_dir = TempDir::new().unwrap();
@@ -2893,7 +2923,7 @@ mod tests {
             flatten_options.id_prefix = id_prefix.into();
             name.push_str("-id_prefix")
         }
-        
+
         if let Some(table_prefix) = options["table_prefix"].as_str() {
             flatten_options.table_prefix = table_prefix.into();
             name.push_str("-table_prefix")
@@ -3049,7 +3079,11 @@ mod tests {
 
     #[test]
     fn full_test_mixed_case() {
-        test_output("fixtures/mixed_case_same.json", vec!["postgresql/postgresql_schema.sql"], json!({}))
+        test_output(
+            "fixtures/mixed_case_same.json",
+            vec!["postgresql/postgresql_schema.sql"],
+            json!({}),
+        )
     }
 
     #[test]
@@ -3209,8 +3243,7 @@ mod tests {
     fn test_ndjson_missing_line() {
         test_output(
             "fixtures/missing_line.ndjson",
-            vec![
-            ],
+            vec![],
             json!({"ndjson": true}),
         )
     }
@@ -3349,10 +3382,7 @@ mod tests {
 
     #[test]
     fn test_large_cell() {
-        let options = Options::builder()
-            .force(true)
-            .xlsx(true)
-            .build();
+        let options = Options::builder().force(true).xlsx(true).build();
 
         let tmp_dir = TempDir::new().unwrap();
 
@@ -3360,7 +3390,7 @@ mod tests {
 
         flatten(
             BufReader::new(File::open("fixtures/large_cell.json").unwrap()), // reader
-            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            tmp_dir.path().to_string_lossy().into(),                         // output directory
             options,
         )
         .unwrap();
@@ -3371,17 +3401,13 @@ mod tests {
         }
         assert!(all_logs.contains(&"WARNING: Cell larger than 32767 chararcters which is too large for XLSX format. The cell will be truncated, so some data will be missing.".to_string()));
 
-        let options = Options::builder()
-            .force(true)
-            .xlsx(true)
-            .threads(2)
-            .build();
+        let options = Options::builder().force(true).xlsx(true).threads(2).build();
 
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
             BufReader::new(File::open("fixtures/large_cell.json").unwrap()), // reader
-            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            tmp_dir.path().to_string_lossy().into(),                         // output directory
             options,
         )
         .unwrap();
@@ -3392,7 +3418,6 @@ mod tests {
         }
         assert!(all_logs.contains(&"WARNING: Cell larger than 32767 chararcters which is too large for XLSX format. The cell will be truncated, so some data will be missing.".to_string()))
     }
-
 
     #[test]
     fn test_multi() {
@@ -3419,7 +3444,6 @@ mod tests {
         let value: Value =
             serde_json::from_reader(File::open(tmp_dir.path().join("datapackage.json")).unwrap())
                 .unwrap();
-        
 
         insta::assert_yaml_snapshot!(&value);
 
@@ -3472,7 +3496,6 @@ mod tests {
             options,
         )
         .unwrap();
-
     }
 
     fn test_output_memory(file: &str, output: Vec<&str>, mut options: Options) {
@@ -3486,29 +3509,24 @@ mod tests {
 
         let file_string = std::fs::read_to_string(file).unwrap();
 
-        let result = flatten_to_memory(
-            BufReader::new(file_string.as_bytes()),
-            options,
-        ).unwrap();
+        let result = flatten_to_memory(BufReader::new(file_string.as_bytes()), options).unwrap();
 
         for file in output {
             let mut lines = vec![];
 
             let reader = flate2::read::GzDecoder::new(result.csv_memory_gz[file].as_slice());
 
-            let reader = ReaderBuilder::new()
-                .has_headers(false)
-                .from_reader(reader);
-            
+            let reader = ReaderBuilder::new().has_headers(false).from_reader(reader);
+
             for line in reader.into_records() {
                 let string_record = line.unwrap();
-                let line_vec: Vec<String> = string_record.into_iter().map(|a| a.to_owned()).collect();
+                let line_vec: Vec<String> =
+                    string_record.into_iter().map(|a| a.to_owned()).collect();
                 lines.push(line_vec)
             }
 
             insta::assert_yaml_snapshot!(format!("{file}-{name}"), lines);
         }
-
     }
 
     #[test]
@@ -3521,8 +3539,7 @@ mod tests {
                 "games_platforms.csv",
                 "games_developer.csv",
             ],
-            Options::builder().build()
+            Options::builder().build(),
         )
     }
-
 }
