@@ -1,0 +1,8 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "name,main_id"
+- "deva,1"
+- "devb,2"
+

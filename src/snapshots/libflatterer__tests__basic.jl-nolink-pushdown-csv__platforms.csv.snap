@@ -1,0 +1,9 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "name,main_id"
+- "PC,1"
+- "Xbox,2"
+- "Playstation,2"
+

@@ -373,6 +373,8 @@ pub struct Options {
     pub evolve: bool,
     #[builder(default)]
     pub memory: bool,
+    #[builder(default)]
+    pub no_link: bool,
 }
 
 #[derive(Debug)]
@@ -839,6 +841,14 @@ impl FlatFiles {
         one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
     ) {
+        if !self.options.no_link {
+            self.insert_link_fields(one_to_many_full_paths, one_to_many_no_index_paths, &mut obj, &table_name);
+        }
+        let current_list = self.table_rows.get_mut(&table_name).unwrap(); //we added table_row already
+        current_list.push(obj);
+    }
+
+    fn insert_link_fields(&mut self, one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>, one_to_many_no_index_paths: SmallVec<[SmallVec<[smartstring::SmartString<smartstring::LazyCompact>; 5]>; 5]>, obj: &mut Map<String, Value>, table_name: &String) {
         let mut path_iter = one_to_many_full_paths
             .iter()
             .zip(one_to_many_no_index_paths)
@@ -907,7 +917,7 @@ impl FlatFiles {
             }
         }
 
-        if table_name != self.main_table_name {
+        if *table_name != self.main_table_name {
             obj.insert(
                 ["_link_", &self.main_table_name].concat(),
                 Value::String(
@@ -919,9 +929,6 @@ impl FlatFiles {
                 ),
             );
         };
-
-        let current_list = self.table_rows.get_mut(&table_name).unwrap(); //we added table_row already
-        current_list.push(obj);
     }
 
     pub fn create_rows(&mut self) -> Result<()> {
@@ -1430,6 +1437,11 @@ impl FlatFiles {
                     "primaryKey": "_link",
                 }
             });
+
+            if self.options.no_link {
+                resource["schema"].as_object_mut().expect("just made above").remove("primaryKey");
+            }
+
             if !foreign_keys.is_empty() {
                 resource["schema"]
                     .as_object_mut()
@@ -2708,6 +2720,11 @@ mod tests {
         flatten_options.drop = true;
         flatten_options.sql_scripts = true;
 
+        if let Some(no_link) = options["no_link"].as_bool() {
+            flatten_options.no_link = no_link;
+            name.push_str("-nolink")
+        }
+
         if let Some(inline) = options["inline"].as_bool() {
             flatten_options.inline_one_to_one = inline;
             name.push_str("-inline")
@@ -2824,6 +2841,17 @@ mod tests {
                 &format!("fixtures/basic.{}", extention),
                 vec!["csv/main.csv", "csv/platforms.csv", "csv/developer.csv"],
                 json!({}),
+            )
+        }
+    }
+
+    #[test]
+    fn no_link() {
+        for extention in ["json", "jl"] {
+            test_output(
+                &format!("fixtures/basic.{}", extention),
+                vec!["csv/main.csv", "csv/platforms.csv", "csv/developer.csv"],
+                json!({"no_link": true, "pushdown": ["id"]}),
             )
         }
     }

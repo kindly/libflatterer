@@ -1,0 +1,73 @@
+---
+source: src/lib.rs
+expression: "&value"
+---
+profile: tabular-data-package
+resources:
+  - profile: tabular-data-resource
+    name: main
+    flatterer_name: main
+    title: main
+    schema:
+      fields:
+        - name: id
+          title: id
+          type: number
+          format: number
+          count: 2
+        - name: title
+          title: title
+          type: string
+          format: string
+          count: 2
+        - name: releaseDate
+          title: releaseDate
+          type: date
+          format: "%Y-%m-%d"
+          count: 2
+        - name: rating_code
+          title: rating_code
+          type: string
+          format: string
+          count: 2
+        - name: rating_name
+          title: rating_name
+          type: string
+          format: string
+          count: 2
+    path: csv/main.csv
+  - profile: tabular-data-resource
+    name: developer
+    flatterer_name: developer
+    title: developer
+    schema:
+      fields:
+        - name: name
+          title: name
+          type: string
+          format: string
+          count: 2
+        - name: main_id
+          title: main_id
+          type: number
+          format: number
+          count: 2
+    path: csv/developer.csv
+  - profile: tabular-data-resource
+    name: platforms
+    flatterer_name: platforms
+    title: platforms
+    schema:
+      fields:
+        - name: name
+          title: name
+          type: string
+          format: string
+          count: 3
+        - name: main_id
+          title: main_id
+          type: number
+          format: number
+          count: 3
+    path: csv/platforms.csv
+
