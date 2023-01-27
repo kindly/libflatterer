@@ -375,6 +375,8 @@ pub struct Options {
     pub memory: bool,
     #[builder(default)]
     pub no_link: bool,
+    #[builder(default)]
+    pub stats: bool,
 }
 
 #[derive(Debug)]
@@ -1007,7 +1009,8 @@ impl FlatFiles {
                         table_metadata.fields_set.insert(key.clone());
                         table_metadata.field_counts.push(1);
                         table_metadata.ignore_fields.push(false);
-                        table_metadata.describers.push(Describer::new_with_options(DescriberOptions::builder().build()));
+                        let options = DescriberOptions::builder().force_string(!self.options.no_link && key.starts_with("_link")).stats(self.options.stats && self.options.threads == 1).build();
+                        table_metadata.describers.push(Describer::new_with_options(options));
                         let full_path =
                             format!("{}{}", table_metadata.table_name_with_separator, key);
 
@@ -1154,7 +1157,10 @@ impl FlatFiles {
             table_metadata.fields.push(row.field_name.clone());
             table_metadata.fields_set.insert(row.field_name.clone());
             table_metadata.field_counts.push(0);
-            table_metadata.describers.push(Describer::new());
+
+            let options = DescriberOptions::builder().force_string(!self.options.no_link && row.field_name.starts_with("_link")).stats(self.options.stats && self.options.threads == 1).build();
+
+            table_metadata.describers.push(Describer::new_with_options(options));
             table_metadata.ignore_fields.push(false);
             match row.field_title {
                 Some(field_title) => table_metadata.field_titles.push(field_title),
@@ -1406,13 +1412,18 @@ impl FlatFiles {
                 let field_name = if lowercase_names {&metadata.field_titles_lc[order]} else {&metadata.fields[order]};
                 let field_title = &metadata.field_titles[order];
 
-                let field = json!({
+                let mut field = json!({
                     "name": field_name,
                     "title": field_title,
                     "type": data_type,
                     "format": format,
                     "count": metadata.field_counts[order],
                 });
+
+                if self.options.stats && self.options.threads == 1 {
+                    field.as_object_mut().unwrap().insert("stats".into(), metadata.describers[order].stats());
+                }
+
                 fields.push(field);
 
                 if field_name.starts_with("_link") && field_name != "_link" {
@@ -2790,6 +2801,8 @@ mod tests {
 
         flatten_options.postgres_schema = name.clone();
 
+        flatten_options.stats = true;
+
         let result = flatten(
             BufReader::new(File::open(file).unwrap()),
             output_path.clone(),
@@ -2823,7 +2836,10 @@ mod tests {
                     File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
                 )
                 .unwrap();
-                insta::assert_yaml_snapshot!(new_name, &value);
+                insta::assert_yaml_snapshot!(new_name, &value, {
+                    ".resources[].schema.fields[].stats.deciles" => 0,
+                    ".resources[].schema.fields[].stats.centiles" => 0,
+                });
             } else {
                 let file_as_string =
                     read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();

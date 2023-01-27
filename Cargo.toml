@@ -38,7 +38,7 @@ jsonref= "0.4"
 crossbeam-channel="0.5"
 tempfile = "3"
 rusqlite = {version = "0.28.0", features = ["bundled"]}
-csvs_convert = "0.7.11"
+csvs_convert = "0.7.13"
 #csvs_convert = {"path"= "/projects/datapackage_convert"}
 xlsxwriter = "0.3"
 nanoid = "0.4.0"

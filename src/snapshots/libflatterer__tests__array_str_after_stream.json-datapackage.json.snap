@@ -15,16 +15,89 @@ resources:
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: 0.moo.0
+            max_str: 0.moo.1
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - 0.moo.0
+                - 1
+              - - 0.moo.1
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: _link_main
           title: _link_main
-          type: integer
-          format: integer
+          type: string
+          format: string
           count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "0"
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: a
           title: a
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: b
+            max_str: d
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - b
+                - 1
+              - - d
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
       primaryKey: _link
       foreignKeys:
         - fields: _link_main
@@ -40,14 +113,60 @@ resources:
       fields:
         - name: _link
           title: _link
-          type: integer
-          format: integer
+          type: string
+          format: string
           count: 1
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "0"
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: flags
           title: flags
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 3
+            max_len: 3
+            min_str: "a,b"
+            max_str: "a,b"
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "a,b"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
       primaryKey: _link
     path: csv/main.csv
 

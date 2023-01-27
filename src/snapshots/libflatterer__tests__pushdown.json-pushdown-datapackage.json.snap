@@ -12,24 +12,116 @@ resources:
       fields:
         - name: _link
           title: _link
-          type: integer
-          format: integer
+          type: string
+          format: string
           count: 1
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "0"
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: a
           title: a
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value a
+            max_str: value a
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value a
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: b
           title: b
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value b
+            max_str: value b
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value b
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: c
           title: c
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value c
+            max_str: value c
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value c
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
       primaryKey: _link
     path: csv/main.csv
   - profile: tabular-data-resource
@@ -43,36 +135,199 @@ resources:
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 12
+            max_len: 12
+            min_str: 0.sublist1.0
+            max_str: 0.sublist1.1
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - 0.sublist1.0
+                - 1
+              - - 0.sublist1.1
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: _link_main
           title: _link_main
-          type: integer
-          format: integer
+          type: string
+          format: string
           count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "0"
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: a
           title: a
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 24
+            max_len: 24
+            min_str: should not be ovveridden
+            max_str: should not be ovveridden
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - should not be ovveridden
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: d
           title: d
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value d
+            max_str: value d
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value d
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: main_a
           title: main_a
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value a
+            max_str: value a
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value a
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: main_b
           title: main_b
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value b
+            max_str: value b
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value b
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: main_c
           title: main_c
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value c
+            max_str: value c
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value c
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
       primaryKey: _link
       foreignKeys:
         - fields: _link_main
@@ -91,46 +346,257 @@ resources:
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 23
+            max_len: 23
+            min_str: 0.sublist1.0.sublist2.0
+            max_str: 0.sublist1.1.sublist2.0
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - 0.sublist1.0.sublist2.0
+                - 1
+              - - 0.sublist1.1.sublist2.0
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: _link_sublist1
           title: _link_sublist1
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 12
+            max_len: 12
+            min_str: 0.sublist1.0
+            max_str: 0.sublist1.1
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - 0.sublist1.0
+                - 1
+              - - 0.sublist1.1
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: _link_main
           title: _link_main
-          type: integer
-          format: integer
+          type: string
+          format: string
           count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "0"
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: e
           title: e
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value e
+            max_str: value e
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value e
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: main_a
           title: main_a
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value a
+            max_str: value a
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value a
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: main_b
           title: main_b
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value b
+            max_str: value b
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value b
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: main_c
           title: main_c
           type: string
           format: string
           count: 2
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value c
+            max_str: value c
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value c
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: sublist1_a
           title: sublist1_a
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 24
+            max_len: 24
+            min_str: should not be ovveridden
+            max_str: should not be ovveridden
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - should not be ovveridden
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: sublist1_d
           title: sublist1_d
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 7
+            max_len: 7
+            min_str: value d
+            max_str: value d
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - value d
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
       primaryKey: _link
       foreignKeys:
         - fields: _link_sublist1

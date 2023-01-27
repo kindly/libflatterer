@@ -12,14 +12,60 @@ resources:
       fields:
         - name: _link
           title: _link
-          type: integer
-          format: integer
+          type: string
+          format: string
           count: 1
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "0"
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
         - name: "\u0000"
           title: "\u0000"
           type: string
           format: string
           count: 1
+          stats:
+            min_len: 3
+            max_len: 3
+            min_str: bar
+            max_str: bar
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - bar
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
       primaryKey: _link
     path: csv/main.csv
 
