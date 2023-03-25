@@ -3,6 +3,8 @@ use smartstring::alias::String as SmartString;
 use std::io::prelude::*;
 use yajlish::{Context, Enclosing, Handler, Status};
 
+use crate::FlatFiles;
+
 pub struct ParseJson<W: std::io::Write> {
     pub top_level_type: String,
     in_stream: bool,
@@ -10,10 +12,12 @@ pub struct ParseJson<W: std::io::Write> {
     stream_start_open_brackets: usize,
     pub current_object: String,
     no_index_path: Vec<SmartString>,
-    pub sender: Sender<Item>,
+    pub sender: Option<Sender<Item>>,
+    pub flatfiles: Option<FlatFiles>,
     top_level_writer: std::io::BufWriter<W>,
     pub error: String,
     limit: usize,
+    pub count: usize
 }
 
 #[derive(Debug)]
@@ -25,7 +29,8 @@ pub struct Item {
 impl<W: std::io::Write> ParseJson<W> {
     pub fn new(
         top_level_writer: W,
-        sender: Sender<Item>,
+        sender: Option<Sender<Item>>,
+        flatfiles: Option<FlatFiles>,
         stream: bool,
         limit: usize,
     ) -> ParseJson<W> {
@@ -38,9 +43,11 @@ impl<W: std::io::Write> ParseJson<W> {
             current_object: "".to_string(),
             no_index_path: vec![],
             sender,
+            flatfiles,
             top_level_writer: bufwriter,
             error: "".to_string(),
             limit,
+            count: 0
         }
     }
     fn push(&mut self, val: &str) {
@@ -69,13 +76,66 @@ impl<W: std::io::Write> ParseJson<W> {
         }
     }
     fn send(&mut self, item: Item) -> Status {
-        match self.sender.send(item) {
-            Ok(_) => Status::Continue,
-            Err(error) => {
-                self.error = error.to_string();
-                Status::Abort
+
+        if let Some(sender) = self.sender.as_ref() {
+            return match sender.send(item) {
+                Ok(_) => Status::Continue,
+                Err(error) => {
+                    self.error = error.to_string();
+                    Status::Abort
+                }
             }
         }
+
+        if let Some(flat_files) = self.flatfiles.as_mut() {
+            let serde_result = serde_json::from_str(&item.json);
+
+            if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace)
+            {
+                return Status::Continue
+            }
+
+            if serde_result.is_err() && !flat_files.options.json_stream {
+                self.error = "Error parsing JSON, try the --json-stream option.".into();
+                return Status::Abort
+            }
+
+            let value: serde_json::Value = match serde_result {
+                Ok(value) => {value},
+                Err(error) => {
+                    self.error = error.to_string();
+                    return Status::Abort
+                }
+            };
+
+            if !value.is_object() {
+                self.error = format!(
+                        "Value at array position {} is not an object: value is `{}`",
+                        self.count, value
+                    );
+                return Status::Abort
+            }
+
+            if !flat_files.options.path.is_empty() && item.path != flat_files.path {
+                return Status::Continue
+            }
+            let mut initial_path = vec![];
+            if flat_files.path.is_empty() {
+                initial_path = item.path.clone()
+            }
+
+            flat_files.process_value(value, initial_path);
+            match flat_files.create_rows() {
+                Ok(_) => {},
+                Err(error) => {
+                    self.error = error.to_string();
+                    return Status::Abort
+                }
+            };
+            self.count += 1;
+            return Status::Continue
+        }
+        return Status::Continue
     }
 
     fn send_json(&mut self, _ctx: &Context) -> Status {
@@ -254,7 +314,7 @@ mod tests {
         let mut outer: Vec<u8> = vec![];
         let (sender, receiver) = bounded(1000);
         {
-            let mut handler = ParseJson::new(&mut outer, sender, stream, 0);
+            let mut handler = ParseJson::new(&mut outer, Some(sender), None, stream, 0);
             let mut parser = Parser::new(&mut handler);
             let mut reader = std::io::BufReader::new(File::open(file).unwrap());
 

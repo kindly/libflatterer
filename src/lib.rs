@@ -382,6 +382,7 @@ pub struct Options {
 #[derive(Debug)]
 pub struct FlatFiles {
     pub options: Options,
+    pub path: Vec<SmartString>,
     pub output_dir: PathBuf,
     main_table_name: String,
     emit_obj: SmallVec<[SmallVec<[String; 5]>; 5]>,
@@ -540,9 +541,16 @@ impl FlatFiles {
             options.id_prefix = format!("{}.", nanoid::nanoid!(10));
         }
 
+        let path = options
+            .path
+            .iter()
+            .map(SmartString::from)
+            .collect_vec();
+
         let mut flat_files = Self {
             output_dir: output_dir.into(),
             options,
+            path,
             main_table_name,
             emit_obj: smallvec_emit_obj,
             row_number: 0,
@@ -2546,7 +2554,8 @@ pub fn flatten<R: Read>(
         {
             let mut handler = yajlparser::ParseJson::new(
                 &mut outer,
-                item_sender.clone(),
+                Some(item_sender.clone()),
+                None,
                 options.json_stream,
                 500 * 1024 * 1024,
             );
@@ -2706,6 +2715,111 @@ pub fn flatten<R: Read>(
 
     Ok(())
 }
+
+#[cfg(not(target_family = "wasm"))]
+pub fn flatten_simple<R: Read>(
+    mut input: BufReader<R>,
+    output: String,
+    options: Options,
+) -> Result<()> {
+
+    let output_path = PathBuf::from(output);
+
+    let mut flat_files = FlatFiles::new(
+        output_path.clone().to_string_lossy().to_string(),
+        options.clone(),
+    )?;
+
+    let mut outer: Vec<u8> = vec![];
+    let top_level_type;
+
+    // if options.ndjson {
+    //     for line in input.lines() {
+    //         item_sender
+    //             .send(Item {
+    //                 json: line.context(FlattererReadSnafu { filepath: "input" })?,
+    //                 path: vec![],
+    //             })
+    //             .context(ChannelItemSnafu {})?;
+    //     }
+    // } else {
+    {
+        let mut handler = yajlparser::ParseJson::new(
+            &mut outer,
+            None,
+            Some(flat_files),
+            options.json_stream,
+            500 * 1024 * 1024,
+        );
+
+        {
+            let mut parser = Parser::new(&mut handler);
+
+            if let Err(error) = parser.parse(&mut input) {
+                log::debug!("Parse error, whilst in main parsing");
+                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
+                    filename: output_path.to_string_lossy(),
+                })?;
+                return Err(Error::YAJLishParseError {
+                    error: format!("Invalid JSON due to the following error: {}", error),
+                });
+            }
+            if let Err(error) = parser.finish_parse() {
+                // never seems to reach parse complete on stream data
+                if !error
+                    .to_string()
+                    .contains("Did not reach a ParseComplete status")
+                {
+                    log::debug!("Parse error, whilst in cleaning up parsing");
+                    //stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+                    remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
+                        filename: output_path.to_string_lossy(),
+                    })?;
+                    return Err(Error::YAJLishParseError {
+                        error: format!("Invalid JSON due to the following error: {}", error),
+                    });
+                }
+            }
+        }
+
+        top_level_type = handler.top_level_type.clone();
+        flat_files = handler.flatfiles.expect("we added it earlier");
+
+        if !handler.error.is_empty() {
+            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
+                filename: output_path.to_string_lossy(),
+            })?;
+            return Err(Error::FlattererProcessError {
+                message: handler.error,
+            });
+        }
+        if handler.count == 0 {
+            return Err(Error::FlattererProcessError {
+                message: "The JSON provided as input is not an array of objects".to_string(),
+            });
+        }
+        flat_files.log_info(&format!(
+            "Finished processing {} value(s)",
+            handler.count
+        ));
+    }
+
+    if top_level_type == "object" && !options.json_stream {
+        let json_str = std::str::from_utf8(&outer)
+                .expect("utf8 should be checked by yajl")
+                .to_string();
+
+        let serde_value: Value = serde_json::from_str(&json_str).context(SerdeReadSnafu {})?;
+
+        flat_files.process_value(serde_value, vec![]);
+        flat_files.create_rows()?;
+    }
+
+    flat_files.write_files()?;
+
+    Ok(())
+}
+
 
 #[cfg(test)]
 mod tests {
@@ -3337,9 +3451,24 @@ mod tests {
             options,
         )
         .unwrap();
-
     }
 
+    #[test]
+    fn test_simple_speed() {
+        let options = Options::builder()
+            .json_stream(true)
+            .force(true)
+            .build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        flatten_simple(
+            BufReader::new(File::open("fixtures/daily_16_large.json").unwrap()), // reader
+            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            options,
+        )
+        .unwrap();
+    }
 
     #[test]
     fn test_evolve() {
