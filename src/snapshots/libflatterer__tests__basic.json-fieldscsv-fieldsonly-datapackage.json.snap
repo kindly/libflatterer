@@ -1,0 +1,309 @@
+---
+source: src/lib.rs
+expression: "&value"
+---
+profile: tabular-data-package
+resources:
+  - profile: tabular-data-resource
+    name: main
+    flatterer_name: main
+    title: main
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          format: string
+          count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "1"
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 1
+              - - "1"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: id
+          title: id
+          type: number
+          format: number
+          count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "2"
+            max_str: "2"
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "2"
+                - 1
+            sum: 3
+            mean: 1.5
+            variance: 0.25
+            stddev: 0.5
+            min_number: 1
+            max_number: 2
+            median: 1.5
+            lower_quartile: 1
+            upper_quartile: 2
+            deciles: 0
+            centiles: 0
+        - name: releaseDate
+          title: releaseDate
+          type: date
+          format: "%Y-%m-%d"
+          count: 2
+          stats:
+            min_len: 10
+            max_len: 10
+            min_str: 2015-01-01
+            max_str: 2016-01-01
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - 2015-01-01
+                - 1
+              - - 2016-01-01
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: rating_name
+          title: rating_name
+          type: string
+          format: string
+          count: 2
+          stats:
+            min_len: 8
+            max_len: 8
+            min_str: Everyone
+            max_str: Everyone
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - Everyone
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+      primaryKey: _link
+    path: csv/main.csv
+  - profile: tabular-data-resource
+    name: developer
+    flatterer_name: developer
+    title: developer
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          format: string
+          count: 2
+          stats:
+            min_len: 13
+            max_len: 13
+            min_str: 0.developer.0
+            max_str: 1.developer.0
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - 0.developer.0
+                - 1
+              - - 1.developer.0
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: _link_main
+          title: _link_main
+          type: string
+          format: string
+          count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "1"
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 1
+              - - "1"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: name
+          title: name
+          type: string
+          format: string
+          count: 2
+          stats:
+            min_len: 4
+            max_len: 4
+            min_str: deva
+            max_str: devb
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - deva
+                - 1
+              - - devb
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_main
+          reference:
+            resource: main
+            fields: _link
+    path: csv/developer.csv
+  - profile: tabular-data-resource
+    name: platforms
+    flatterer_name: platforms
+    title: platforms
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          format: string
+          count: 3
+          stats:
+            min_len: 13
+            max_len: 13
+            min_str: 0.platforms.0
+            max_str: 1.platforms.1
+            count: 3
+            empty_count: 0
+            exact_unique: 3
+            estimate_unique: ~
+            top_20:
+              - - 0.platforms.0
+                - 1
+              - - 1.platforms.0
+                - 1
+              - - 1.platforms.1
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: _link_main
+          title: _link_main
+          type: string
+          format: string
+          count: 3
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "1"
+            count: 3
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - "1"
+                - 2
+              - - "0"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_main
+          reference:
+            resource: main
+            fields: _link
+    path: csv/platforms.csv
+

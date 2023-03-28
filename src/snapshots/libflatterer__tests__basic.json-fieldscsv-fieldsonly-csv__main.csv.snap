@@ -1,0 +1,8 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "_link,id,releaseDate,rating_name"
+- "0,1,2015-01-01,Everyone"
+- "1,2,2016-01-01,Everyone"
+

@@ -400,6 +400,7 @@ pub struct FlatFiles {
     tmp_memory: HashMap<String, Vec<u8>>,
     pub csv_memory_gz: HashMap<String, Vec<u8>>,
     pub files_memory: HashMap<String, Vec<u8>>,
+    direct: bool
 }
 
 #[derive(Serialize, Debug)]
@@ -547,6 +548,8 @@ impl FlatFiles {
             .map(SmartString::from)
             .collect_vec();
 
+        let direct = (!options.fields_csv.is_empty() || !options.fields_csv_string.is_empty()) && options.only_fields;
+
         let mut flat_files = Self {
             output_dir: output_dir.into(),
             options,
@@ -566,7 +569,8 @@ impl FlatFiles {
             table_order: HashMap::new(),
             tmp_memory: HashMap::new(),
             csv_memory_gz: HashMap::new(),
-            files_memory: HashMap::new()
+            files_memory: HashMap::new(),
+            direct 
         };
 
         #[cfg(not(target_family = "wasm"))]
@@ -955,20 +959,22 @@ impl FlatFiles {
                         self.tmp_csvs.insert(
                             table.clone(),
                             TmpCSVWriter::Memory(
-                                WriterBuilder::new().flexible(true).from_writer(encoder),
+                                WriterBuilder::new().flexible(!self.direct).from_writer(encoder),
                             ),
                         );
                     } else {
                         #[cfg(not(target_family = "wasm"))]
-                        let output_path = self.output_dir.join(format!("tmp/{}.csv", table));
+                        let output_path = self.output_dir.join(format!("{}/{}.csv", if self.direct {"csv"} else {"tmp"}, table));
+                        let mut writer = WriterBuilder::new()
+                                    .flexible(!self.direct)
+                                    .from_writer(get_writer_from_path(&output_path)?);
+                        if self.direct {
+                            writer.write_record(self.table_metadata.get(table).unwrap().field_titles.clone()).unwrap();
+                        }
                         #[cfg(not(target_family = "wasm"))]
                         self.tmp_csvs.insert(
                             table.clone(),
-                            TmpCSVWriter::Disk(
-                                WriterBuilder::new()
-                                    .flexible(true)
-                                    .from_writer(get_writer_from_path(&output_path)?),
-                            ),
+                            TmpCSVWriter::Disk(writer)
                         );
                     }
                 } else {
@@ -1604,6 +1610,9 @@ impl FlatFiles {
     }
 
     pub fn write_csvs(&mut self) -> Result<()> {
+        if self.direct {
+            return Ok(())
+        }
         self.log_info("Writing final CSV files");
         let tmp_path = self.output_dir.join("tmp");
         let csv_path = self.output_dir.join("csv");
@@ -1824,12 +1833,12 @@ impl FlatFiles {
     #[cfg(not(target_family = "wasm"))]
     pub fn write_xlsx(&mut self) -> Result<()> {
         self.log_info("Writing final XLSX file");
-        let tmp_path = self.output_dir.join("tmp");
+        let csv_path = self.output_dir.join(if self.direct {"csv"} else {"tmp"});
 
         let workbook = Workbook::new_with_options(
             &self.output_dir.join("output.xlsx").to_string_lossy(),
             true,
-            Some(&tmp_path.to_string_lossy()),
+            Some(&csv_path.to_string_lossy()),
             false,
         );
 
@@ -1880,10 +1889,10 @@ impl FlatFiles {
                 .add_worksheet(Some(&new_table_title))
                 .context(FlattererXLSXSnafu {})?;
 
-            let filepath = tmp_path.join(format!("{}.csv", table_name));
+            let filepath = csv_path.join(format!("{}.csv", table_name));
             let csv_reader = ReaderBuilder::new()
-                .has_headers(false)
-                .flexible(true)
+                .has_headers(self.direct)
+                .flexible(!self.direct)
                 .from_path(filepath.clone())
                 .context(FlattererCSVReadSnafu {
                     filepath: filepath.to_string_lossy(),
@@ -2901,6 +2910,17 @@ mod tests {
             }
         }
 
+        if let Some(fields_csv) = options["fields_csv"].as_str() {
+            flatten_options.fields_csv = fields_csv.into();
+
+            let fields_only = options["fields_only"].as_bool().unwrap();
+            flatten_options.only_fields = fields_only;
+            name.push_str("-fieldscsv");
+            if fields_only {
+                name.push_str("-fieldsonly")
+            }
+        }
+
         if let Some(path_values) = options["path"].as_array() {
             let path = path_values
                 .iter()
@@ -3088,6 +3108,17 @@ mod tests {
                 "fixtures/basic.json",
                 vec!["csv/Devs.csv", "csv/Games.csv"],
                 json!({"tables_csv": "fixtures/reorder_remove_tables.csv", "tables_only": tables_only}),
+            );
+        }
+    }
+
+    #[test]
+    fn test_fields_csv() {
+        for fields_only in [true, false] {
+            test_output(
+                "fixtures/basic.json",
+                vec!["csv/main.csv", "csv/developer.csv", "csv/platforms.csv"],
+                json!({"fields_csv": "fixtures/fields.csv", "fields_only": fields_only}),
             );
         }
     }
