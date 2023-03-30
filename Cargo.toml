@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.18.1"
+version = "0.18.2"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -27,7 +27,7 @@ lazy_static = "1"
 typed-builder = "0.10.0"
 num_cpus = "1.13.1"
 flate2 = "1.0.24"
-csvs_convert = "0.7.8"
+csvs_convert = "0.8.1"
 
 #[target.'cfg(target_family = "wasm")'.dependencies]
 #getrandom = {version="0.2", features = ["js"]}
@@ -38,7 +38,6 @@ jsonref= "0.4"
 crossbeam-channel="0.5"
 tempfile = "3"
 rusqlite = {version = "0.28.0", features = ["bundled"]}
-csvs_convert = "0.7.13"
 #csvs_convert = {"path"= "/projects/datapackage_convert"}
 xlsxwriter = "0.3"
 nanoid = "0.4.0"

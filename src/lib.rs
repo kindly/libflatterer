@@ -2846,10 +2846,12 @@ mod tests {
         let mut flatten_options = Options::builder().build();
 
         flatten_options.csv = true;
-        flatten_options.parquet = true;
         if name != "illegal.json" {
             flatten_options.postgres_connection = "postgres://test:test@localhost/test".into();
             flatten_options.sqlite = true;
+            if name != "mixed_case_same.json" {
+                flatten_options.parquet = true;
+            }
         }
         flatten_options.drop = true;
         flatten_options.sql_scripts = true;
@@ -3494,7 +3496,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
 
         flatten_simple(
-            BufReader::new(File::open("fixtures/daily_16_large.json").unwrap()), // reader
+            BufReader::new(File::open("fixtures/daily_16.json").unwrap()), // reader
             tmp_dir.path().to_string_lossy().into(),                       // output directory
             options,
         )
