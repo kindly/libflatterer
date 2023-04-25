@@ -103,12 +103,10 @@ use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 use csvs_convert::{
     datapackage_to_parquet_with_options, datapackage_to_postgres_with_options,
     datapackage_to_sqlite_with_options, datapackage_to_xlsx_with_options,
-    merge_datapackage_with_options
+    merge_datapackage_with_options,
 };
 
-use csvs_convert::{
-    Describer, DescriberOptions
-};
+use csvs_convert::{Describer, DescriberOptions};
 
 pub use guess_array::guess_array;
 use itertools::Itertools;
@@ -129,6 +127,20 @@ use xlsxwriter::Workbook;
 use yajlish::Parser;
 #[cfg(not(target_family = "wasm"))]
 use yajlparser::Item;
+
+use arrow_array::builder;
+use csv_async::{AsyncReaderBuilder, AsyncWriter, AsyncWriterBuilder};
+#[cfg(not(target_family = "wasm"))]
+use object_store::aws::AmazonS3Builder;
+#[cfg(not(target_family = "wasm"))]
+use object_store::path::Path;
+#[cfg(not(target_family = "wasm"))]
+use object_store::ObjectStore;
+use parquet::arrow::async_writer::AsyncArrowWriter;
+use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWrite, BufReader as AsycBufReader};
+use tokio::sync::mpsc;
+use tokio::runtime;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -182,6 +194,12 @@ pub enum Error {
         source: csv::Error,
         backtrace: Backtrace,
     },
+    #[snafu(display("Error writing to CSV file {}", filepath.to_string_lossy()))]
+    FlattererCSVAsyncWriteError {
+        filepath: PathBuf,
+        source: csv_async::Error,
+        backtrace: Backtrace,
+    },
     #[snafu(display("Error reading file {}", filepath.to_string_lossy()))]
     FlattererReadError {
         filepath: PathBuf,
@@ -197,6 +215,11 @@ pub enum Error {
     #[snafu(display("Could not write file {}", filename))]
     FlattererFileWriteError {
         filename: String,
+        source: std::io::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("IO Error: {}", source))]
+    FlattererIoError {
         source: std::io::Error,
         backtrace: Backtrace,
     },
@@ -230,7 +253,13 @@ pub enum Error {
     ChannelSendError { source: SendError<Value> },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
+    TokioChannelSendError { source: tokio::sync::mpsc::error::SendError<Value> },
+    #[cfg(not(target_family = "wasm"))]
+    #[snafu(display(""))]
     ChannelItemError { source: SendError<Item> },
+    #[cfg(not(target_family = "wasm"))]
+    #[snafu(display(""))]
+    TokioChannelItemError { source: tokio::sync::mpsc::error::SendError<Item> },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
     ChannelBufSendError { source: SendError<(Vec<u8>, bool)> },
@@ -238,11 +267,34 @@ pub enum Error {
     #[snafu(display(""))]
     ChannelStopSendError { source: SendError<()> },
     #[cfg(not(target_family = "wasm"))]
+    #[snafu(display(""))]
+    TokioChannelStopSendError { source: mpsc::error::SendError<()> },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("{}", source))]
     RusqliteError { source: rusqlite::Error },
     #[snafu(display(""))]
     FlattererCSVIntoInnerError {
         source: csv::IntoInnerError<Writer<flate2::write::GzEncoder<File>>>,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{}", source))]
+    ObjectStoreError {
+        source: object_store::Error,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{}", source))]
+    JoinError {
+        source: tokio::task::JoinError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{}", source))]
+    URLError {
+        source: url::ParseError,
+        backtrace: Backtrace,
+    },
+    #[snafu(display("{}", source))]
+    ParquetError {
+        source: parquet::errors::ParquetError,
         backtrace: Backtrace,
     },
 }
@@ -265,11 +317,12 @@ impl fmt::Display for PathItem {
     }
 }
 
-#[derive(Debug)]
 enum TmpCSVWriter {
     #[cfg(not(target_family = "wasm"))]
     Disk(csv::Writer<File>),
     Memory(csv::Writer<GzEncoder<Vec<u8>>>),
+    AsyncCSV(AsyncWriter<Box<dyn AsyncWrite + Unpin + Send>>),
+    AsyncParquet(AsyncArrowWriter<Box<dyn AsyncWrite + Unpin + Send>>),
     None(),
 }
 
@@ -377,9 +430,12 @@ pub struct Options {
     pub no_link: bool,
     #[builder(default)]
     pub stats: bool,
+    #[builder(default)]
+    pub s3: bool,
+    #[builder(default)]
+    pub low_disk: bool,
 }
 
-#[derive(Debug)]
 pub struct FlatFiles {
     pub options: Options,
     pub path: Vec<SmartString>,
@@ -400,7 +456,8 @@ pub struct FlatFiles {
     tmp_memory: HashMap<String, Vec<u8>>,
     pub csv_memory_gz: HashMap<String, Vec<u8>>,
     pub files_memory: HashMap<String, Vec<u8>>,
-    direct: bool
+    direct: bool,
+    object_store: Option<Box<dyn ObjectStore>>,
 }
 
 #[derive(Serialize, Debug)]
@@ -416,8 +473,18 @@ struct TableMetadata {
     table_name_with_separator: String,
     output_path: PathBuf,
     field_titles_lc: Vec<String>,
+    supplied_types: Vec<String>,
     #[serde(skip_serializing)]
     describers: Vec<Describer>,
+    #[serde(skip_serializing)]
+    arrow_builders: Vec<ArrayBuilders>,
+}
+
+#[derive(Debug)]
+enum ArrayBuilders {
+    Boolean(arrow_array::builder::BooleanBuilder),
+    Integer(arrow_array::builder::Int64Builder),
+    String(arrow_array::builder::LargeStringBuilder),
 }
 
 impl TableMetadata {
@@ -450,7 +517,9 @@ impl TableMetadata {
             table_name_with_separator,
             output_path,
             field_titles_lc: vec![],
-            describers: vec![]
+            describers: vec![],
+            supplied_types: vec![],
+            arrow_builders: vec![],
         }
     }
 }
@@ -460,6 +529,7 @@ struct FieldsRecord {
     table_name: String,
     field_name: String,
     field_title: Option<String>,
+    field_type: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -511,7 +581,7 @@ impl FlatFiles {
             options.memory = true;
         }
 
-        if !options.memory {
+        if !options.memory && !options.s3 {
             let output_path = PathBuf::from(output_dir.clone());
             if output_path.is_dir() {
                 if options.force {
@@ -542,16 +612,42 @@ impl FlatFiles {
             options.id_prefix = format!("{}.", nanoid::nanoid!(10));
         }
 
-        let path = options
-            .path
-            .iter()
-            .map(SmartString::from)
-            .collect_vec();
+        let path = options.path.iter().map(SmartString::from).collect_vec();
 
-        let direct = (!options.fields_csv.is_empty() || !options.fields_csv_string.is_empty()) && options.only_fields;
+        let direct = (!options.fields_csv.is_empty() || !options.fields_csv_string.is_empty())
+            && options.only_fields;
+
+        let object_store: Option<Box<dyn ObjectStore>> = if !options.s3 {
+            None
+        } else {
+            let s3 = AmazonS3Builder::from_env()
+                .with_retry(object_store::RetryConfig {
+                    max_retries: 5,
+                    ..Default::default()
+                })
+                .with_url(&output_dir)
+                .with_client_options(
+                     object_store::ClientOptions::new()
+                     .with_http1_only()
+                     .with_pool_max_idle_per_host(0)
+                //       .with_connect_timeout(std::time::Duration::from_secs(10))
+                //        .with_timeout(std::time::Duration::from_secs(10))
+                 )
+                .build()
+                .context(ObjectStoreSnafu {})?;
+            Some(Box::new(s3))
+        };
+
+        let mut new_output_dir = output_dir.clone();
+
+        if options.s3 {
+            let url = url::Url::parse(&output_dir).context(URLSnafu {})?;
+            new_output_dir = url.path().to_string();
+            new_output_dir.remove(0);
+        }
 
         let mut flat_files = Self {
-            output_dir: output_dir.into(),
+            output_dir: new_output_dir.into(),
             options,
             path,
             main_table_name,
@@ -570,11 +666,14 @@ impl FlatFiles {
             tmp_memory: HashMap::new(),
             csv_memory_gz: HashMap::new(),
             files_memory: HashMap::new(),
-            direct 
+            direct,
+            object_store,
         };
 
         #[cfg(not(target_family = "wasm"))]
-        flat_files.set_csv()?;
+        if !flat_files.options.s3 {
+            flat_files.create_csv_dir()?;
+        }
 
         #[cfg(not(target_family = "wasm"))]
         if !flat_files.options.schema.is_empty() {
@@ -599,7 +698,7 @@ impl FlatFiles {
     }
 
     #[cfg(not(target_family = "wasm"))]
-    fn set_csv(&mut self) -> Result<()> {
+    fn create_csv_dir(&mut self) -> Result<()> {
         let csv_path = self.output_dir.join("csv");
         if !csv_path.is_dir() {
             create_dir_all(&csv_path).context(FlattererCreateDirSnafu {
@@ -856,13 +955,26 @@ impl FlatFiles {
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
     ) {
         if !self.options.no_link {
-            self.insert_link_fields(one_to_many_full_paths, one_to_many_no_index_paths, &mut obj, &table_name);
+            self.insert_link_fields(
+                one_to_many_full_paths,
+                one_to_many_no_index_paths,
+                &mut obj,
+                &table_name,
+            );
         }
         let current_list = self.table_rows.get_mut(&table_name).unwrap(); //we added table_row already
         current_list.push(obj);
     }
 
-    fn insert_link_fields(&mut self, one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>, one_to_many_no_index_paths: SmallVec<[SmallVec<[smartstring::SmartString<smartstring::LazyCompact>; 5]>; 5]>, obj: &mut Map<String, Value>, table_name: &String) {
+    fn insert_link_fields(
+        &mut self,
+        one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
+        one_to_many_no_index_paths: SmallVec<
+            [SmallVec<[smartstring::SmartString<smartstring::LazyCompact>; 5]>; 5],
+        >,
+        obj: &mut Map<String, Value>,
+        table_name: &String,
+    ) {
         let mut path_iter = one_to_many_full_paths
             .iter()
             .zip(one_to_many_no_index_paths)
@@ -959,23 +1071,30 @@ impl FlatFiles {
                         self.tmp_csvs.insert(
                             table.clone(),
                             TmpCSVWriter::Memory(
-                                WriterBuilder::new().flexible(!self.direct).from_writer(encoder),
+                                WriterBuilder::new()
+                                    .flexible(!self.direct)
+                                    .from_writer(encoder),
                             ),
                         );
                     } else {
                         #[cfg(not(target_family = "wasm"))]
-                        let output_path = self.output_dir.join(format!("{}/{}.csv", if self.direct {"csv"} else {"tmp"}, table));
+                        let output_path = self.output_dir.join(format!(
+                            "{}/{}.csv",
+                            if self.direct { "csv" } else { "tmp" },
+                            table
+                        ));
                         let mut writer = WriterBuilder::new()
-                                    .flexible(!self.direct)
-                                    .from_writer(get_writer_from_path(&output_path)?);
+                            .flexible(!self.direct)
+                            .from_writer(get_writer_from_path(&output_path)?);
                         if self.direct {
-                            writer.write_record(self.table_metadata.get(table).unwrap().field_titles.clone()).unwrap();
+                            writer
+                                .write_record(
+                                    self.table_metadata.get(table).unwrap().field_titles.clone(),
+                                ).context(FlattererCSVWriteSnafu {filepath: &output_path})?
                         }
                         #[cfg(not(target_family = "wasm"))]
-                        self.tmp_csvs.insert(
-                            table.clone(),
-                            TmpCSVWriter::Disk(writer)
-                        );
+                        self.tmp_csvs
+                            .insert(table.clone(), TmpCSVWriter::Disk(writer));
                     }
                 } else {
                     self.tmp_csvs.insert(table.clone(), TmpCSVWriter::None());
@@ -1007,11 +1126,8 @@ impl FlatFiles {
                 for (num, field) in table_metadata.fields.iter().enumerate() {
                     if let Some(value) = row.get_mut(field) {
                         table_metadata.field_counts[num] += 1;
-                        let string_value = value_convert(
-                            value.take(),
-                            &mut table_metadata.describers,
-                            num,
-                        );
+                        let string_value =
+                            value_convert(value.take(), &mut table_metadata.describers, num);
                         output_row.push(string_value);
                     } else {
                         output_row.push("".to_string());
@@ -1023,8 +1139,13 @@ impl FlatFiles {
                         table_metadata.fields_set.insert(key.clone());
                         table_metadata.field_counts.push(1);
                         table_metadata.ignore_fields.push(false);
-                        let options = DescriberOptions::builder().force_string(!self.options.no_link && key.starts_with("_link")).stats(self.options.stats && self.options.threads == 1).build();
-                        table_metadata.describers.push(Describer::new_with_options(options));
+                        let options = DescriberOptions::builder()
+                            .force_string(!self.options.no_link && key.starts_with("_link"))
+                            .stats(self.options.stats && self.options.threads == 1)
+                            .build();
+                        table_metadata
+                            .describers
+                            .push(Describer::new_with_options(options));
                         let full_path =
                             format!("{}{}", table_metadata.table_name_with_separator, key);
 
@@ -1051,6 +1172,277 @@ impl FlatFiles {
                             .context(FlattererCSVWriteSnafu {
                                 filepath: &table_metadata.output_path,
                             })?;
+                    }
+                    if let TmpCSVWriter::Memory(writer) = writer {
+                        writer
+                            .write_record(&output_row)
+                            .context(FlattererCSVWriteSnafu {
+                                filepath: &table_metadata.output_path,
+                            })?;
+                    }
+                }
+            }
+        }
+        for val in self.table_rows.values_mut() {
+            val.clear();
+        }
+        Ok(())
+    }
+
+    pub async fn create_arrow_cols(&mut self) -> Result<()> {
+        for (table, rows) in self.table_rows.iter_mut() {
+            let table_metadata = self.table_metadata.get_mut(table).unwrap(); //key known
+
+            for row in rows {
+                for (num, field) in table_metadata.fields.iter().enumerate() {
+                    let value_option = row.get_mut(field);
+                    table_metadata.field_counts[num] += 1;
+
+                    match &mut table_metadata.arrow_builders[num] {
+                        ArrayBuilders::Boolean(b) => {
+                            if value_option.is_none() {
+                                b.append_null();
+                                continue;
+                            }
+                            let value = value_option.expect("checked above");
+                            match value {
+                                Value::Null => b.append_null(),
+                                Value::Bool(bool) => b.append_value(*bool),
+                                Value::String(str) => {
+                                    match str.parse::<bool>() {
+                                        Ok(bool) => b.append_value(bool),
+                                        Err(_) => return Err(Error::FlattererProcessError {
+                                            message: format!(
+                                                "Unable to parse {str} as bool in field {field}"
+                                            ),
+                                        }),
+                                    }
+                                }
+                                _ => {
+                                    return Err(Error::FlattererProcessError {
+                                        message: format!(
+                                            "Unable to parse {value} as bool in field {field}"
+                                        ),
+                                    })
+                                }
+                            }
+                        }
+                        ArrayBuilders::Integer(integer) => {
+                            if value_option.is_none() {
+                                integer.append_null();
+                                continue;
+                            }
+                            let value = value_option.expect("checked above");
+                            match value {
+                                Value::Null => integer.append_null(),
+                                Value::Number(num) => integer.append_value(num.as_i64().ok_or(
+                                    Error::FlattererProcessError {
+                                        message: format!(
+                                            "Unable to parse {num} as integer in field {field}"
+                                        ),
+                                    },
+                                )?),
+                                Value::String(str) => {
+                                    match str.parse::<i64>() {
+                                        Ok(parsed) => integer.append_value(parsed),
+                                        Err(_) => return Err(Error::FlattererProcessError {
+                                            message: format!(
+                                                "Unable to parse {str} as integer in field {field}"
+                                            ),
+                                        }),
+                                    }
+                                }
+                                _ => {
+                                    return Err(Error::FlattererProcessError {
+                                        message: format!(
+                                            "Unable to parse {value} as integer in field {field}"
+                                        ),
+                                    })
+                                }
+                            }
+                        }
+                        ArrayBuilders::String(string) => {
+                            if value_option.is_none() {
+                                string.append_null();
+                                continue;
+                            }
+                            let value = value_option.expect("checked above");
+                            match value {
+                                Value::Null => string.append_null(),
+                                Value::String(str) => string.append_value(str),
+                                val => string.append_value(val.to_string()),
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut arrow_arrays: Vec<(&String, arrow_array::array::ArrayRef)> = vec![];
+
+            use std::sync::Arc;
+
+            for (index, array_builder) in table_metadata.arrow_builders.iter_mut().enumerate() {
+                let field_name = &table_metadata.field_titles[index];
+                match array_builder {
+                    ArrayBuilders::String(b) => {
+                        arrow_arrays.push((field_name, Arc::new(b.finish())))
+                    }
+                    ArrayBuilders::Boolean(b) => {
+                        arrow_arrays.push((field_name, Arc::new(b.finish())))
+                    }
+                    ArrayBuilders::Integer(b) => {
+                        arrow_arrays.push((field_name, Arc::new(b.finish())))
+                    }
+                }
+            }
+            let record_batch = arrow_array::RecordBatch::try_from_iter(arrow_arrays)
+                .expect("should be well formed arrays");
+
+            if !self.tmp_csvs.contains_key(table) {
+                let file_path = format!(
+                    "{}/parquet/{}.parquet",
+                    self.output_dir.to_string_lossy(),
+                    table
+                );
+
+                let path: Path = Path::from(file_path);
+                let (_id, writer) = self
+                    .object_store
+                    .as_ref()
+                    .expect("object store should exist")
+                    .put_multipart(&path)
+                    .await
+                    .context(ObjectStoreSnafu {})?;
+
+                let props = parquet::file::properties::WriterProperties::builder()
+                    .set_compression(parquet::basic::Compression::SNAPPY)
+                    .build();
+
+                let parquet_writer =
+                    AsyncArrowWriter::try_new(writer, record_batch.schema(), 1024, Some(props)).context(ParquetSnafu {})?;
+
+                self.tmp_csvs
+                    .insert(table.clone(), TmpCSVWriter::AsyncParquet(parquet_writer));
+            }
+
+            let writer = self.tmp_csvs.get_mut(table).unwrap(); //key known
+
+            if let TmpCSVWriter::AsyncParquet(parquet_writer) = writer {
+                parquet_writer.write(&record_batch).await.context(ParquetSnafu {})?;
+            }
+        }
+        for val in self.table_rows.values_mut() {
+            val.clear();
+        }
+        Ok(())
+    }
+
+    pub async fn create_rows_async(&mut self) -> Result<()> {
+        for (table, rows) in self.table_rows.iter_mut() {
+            if !self.tmp_csvs.contains_key(table) {
+                if self.options.csv {
+
+                    let path = format!(
+                        "{}/{}/{}.csv",
+                        self.output_dir.to_string_lossy(),
+                        if self.direct { "csv" } else { "tmp" },
+                        table
+                    );
+                    
+                    let (_id, writer) = self
+                        .object_store
+                        .as_ref()
+                        .expect("object store should exist")
+                        .put_multipart(&path.into())
+                        .await
+                        .context(ObjectStoreSnafu {})?;
+
+                    let csv_writer = AsyncWriterBuilder::new()
+                        .flexible(!self.direct)
+                        .create_writer(writer);
+
+                    self.tmp_csvs
+                        .insert(table.clone(),  TmpCSVWriter::AsyncCSV(csv_writer));
+                } else {
+                    self.tmp_csvs.insert(table.clone(), TmpCSVWriter::None());
+                }
+            }
+
+            if !self.table_metadata.contains_key(table) {
+                let output_path = self.output_dir.join(format!("tmp/{}.csv", table));
+                self.table_metadata.insert(
+                    table.clone(),
+                    TableMetadata::new(
+                        table,
+                        &self.main_table_name,
+                        &self.options.path_separator,
+                        &self.options.table_prefix,
+                        output_path,
+                    ),
+                );
+                if !self.options.only_tables && !self.table_order.contains_key(table) {
+                    self.table_order.insert(table.clone(), table.clone());
+                }
+            }
+
+            let table_metadata = self.table_metadata.get_mut(table).unwrap(); //key known
+            let writer = self.tmp_csvs.get_mut(table).unwrap(); //key known
+
+            for row in rows {
+                let mut output_row: SmallVec<[String; 30]> = smallvec![];
+                for (num, field) in table_metadata.fields.iter().enumerate() {
+                    if let Some(value) = row.get_mut(field) {
+                        table_metadata.field_counts[num] += 1;
+                        let string_value =
+                            value_convert(value.take(), &mut table_metadata.describers, num);
+                        output_row.push(string_value);
+                    } else {
+                        output_row.push("".to_string());
+                    }
+                }
+                for (key, value) in row {
+                    if !table_metadata.fields_set.contains(key) && !self.options.only_fields {
+                        table_metadata.fields.push(key.clone());
+                        table_metadata.fields_set.insert(key.clone());
+                        table_metadata.field_counts.push(1);
+                        table_metadata.ignore_fields.push(false);
+                        let options = DescriberOptions::builder()
+                            .force_string(!self.options.no_link && key.starts_with("_link"))
+                            .stats(self.options.stats && self.options.threads == 1)
+                            .build();
+                        table_metadata
+                            .describers
+                            .push(Describer::new_with_options(options));
+                        let full_path =
+                            format!("{}{}", table_metadata.table_name_with_separator, key);
+
+                        if let Some(title) = self.field_titles_map.get(&full_path) {
+                            table_metadata.field_titles.push(title.clone());
+                        } else {
+                            table_metadata.field_titles.push(key.clone());
+                        }
+
+                        output_row.push(value_convert(
+                            value.take(),
+                            &mut table_metadata.describers,
+                            table_metadata.fields.len() - 1,
+                        ));
+                    }
+                }
+                if !output_row.is_empty() {
+                    table_metadata.rows += 1;
+
+                    //tracing::trace!("writing row {}", output_row[0]);
+
+                    #[cfg(not(target_family = "wasm"))]
+                    if let TmpCSVWriter::AsyncCSV(writer) = writer {
+                        //tracing::trace!("writing record");
+                        writer.write_record(&output_row).await.context(
+                            FlattererCSVAsyncWriteSnafu {
+                                filepath: &table_metadata.output_path,
+                            },
+                        )?;
+                        //tracing::trace!("after writing record");
                     }
                     if let TmpCSVWriter::Memory(writer) = writer {
                         writer
@@ -1172,13 +1564,41 @@ impl FlatFiles {
             table_metadata.fields_set.insert(row.field_name.clone());
             table_metadata.field_counts.push(0);
 
-            let options = DescriberOptions::builder().force_string(!self.options.no_link && row.field_name.starts_with("_link")).stats(self.options.stats && self.options.threads == 1).build();
+            let options = DescriberOptions::builder()
+                .force_string(!self.options.no_link && row.field_name.starts_with("_link"))
+                .stats(self.options.stats && self.options.threads == 1)
+                .build();
 
-            table_metadata.describers.push(Describer::new_with_options(options));
+            table_metadata
+                .describers
+                .push(Describer::new_with_options(options));
             table_metadata.ignore_fields.push(false);
             match row.field_title {
                 Some(field_title) => table_metadata.field_titles.push(field_title),
                 None => table_metadata.field_titles.push(row.field_name),
+            }
+
+            match row.field_type {
+                Some(field_type) => {
+                    table_metadata.supplied_types.push(field_type.clone());
+                    match field_type.as_str() {
+                        "boolean" => table_metadata
+                            .arrow_builders
+                            .push(ArrayBuilders::Boolean(builder::BooleanBuilder::new())),
+                        "integer" => table_metadata
+                            .arrow_builders
+                            .push(ArrayBuilders::Integer(builder::Int64Builder::new())),
+                        _ => table_metadata
+                            .arrow_builders
+                            .push(ArrayBuilders::String(builder::LargeStringBuilder::new())),
+                    }
+                }
+                None => {
+                    table_metadata.supplied_types.push("string".into());
+                    table_metadata
+                        .arrow_builders
+                        .push(ArrayBuilders::String(builder::LargeStringBuilder::new()))
+                }
             }
         }
 
@@ -1406,11 +1826,113 @@ impl FlatFiles {
         Ok(())
     }
 
+    #[cfg(not(target_family = "wasm"))]
+    pub async fn write_files_async(&mut self) -> Result<()> {
+        self.log_info("Analyzing input data");
+        self.mark_ignore();
+        self.determine_order();
+        self.make_lower_case_titles();
+
+        //remove tables that should not be there from table order.
+        self.table_order
+            .retain(|key, _| self.table_metadata.contains_key(key));
+
+        for (file, tmp_csv) in self.tmp_csvs.drain(..) {
+            match tmp_csv {
+                TmpCSVWriter::AsyncCSV(mut tmp_csv) => {
+                    tmp_csv.flush().await.context(FlattererFileWriteSnafu {
+                        filename: file.clone(),
+                    })?;
+                    let mut inner =
+                        tmp_csv
+                            .into_inner()
+                            .await
+                            .context(FlattererFileWriteSnafu {
+                                filename: file.clone(),
+                            })?;
+
+                    inner.flush().await.context(FlattererFileWriteSnafu {
+                        filename: file.clone(),
+                    })?;
+                    inner.shutdown().await.context(FlattererFileWriteSnafu {
+                        filename: file.clone(),
+                    })?;
+                }
+                TmpCSVWriter::AsyncParquet(parquet_writer) => {
+                    parquet_writer.close().await.context(ParquetSnafu {})?;
+                }
+                _ => {}
+            }
+        }
+
+        self.write_data_package(false)?;
+
+        self.object_store
+            .as_ref()
+            .expect("object store should exist")
+            .put(
+                &format!("{}/datapackage.json", self.output_dir.to_string_lossy()).into(),
+                self.files_memory["datapackage.json"].clone().into(),
+            )
+            .await
+            .context(ObjectStoreSnafu {})?;
+
+        if self.options.csv {
+            self.write_csvs_async().await?;
+        };
+
+        for (table_name, _) in self.table_order.iter() {
+            let metadata = self.table_metadata.get(table_name).unwrap(); //key known
+            if metadata.rows == 0 || metadata.ignore {
+                continue;
+            }
+            let reader_path = format!(
+                "{}/tmp/{}.csv",
+                self.output_dir.to_string_lossy(),
+                table_name
+            );
+            self.object_store
+                .as_ref()
+                .expect("object store should exist")
+                .delete(&reader_path.into())
+                .await
+                .context(ObjectStoreSnafu {})?;
+        }
+
+        let (tables_csv, fields_csv) =
+            write_metadata_csvs_memory_datapackage(self.files_memory["datapackage.json"].clone())?;
+
+        self.object_store
+            .as_ref()
+            .expect("object store should exist")
+            .put(
+                &format!("{}/tables.csv", self.output_dir.to_string_lossy()).into(),
+                tables_csv.clone().into(),
+            )
+            .await
+            .context(ObjectStoreSnafu {})?;
+
+        self.object_store
+            .as_ref()
+            .expect("object store should exist")
+            .put(
+                &format!("{}/fields.csv", self.output_dir.to_string_lossy()).into(),
+                fields_csv.clone().into(),
+            )
+            .await
+            .context(ObjectStoreSnafu {})?;
+
+        Ok(())
+    }
+
     pub fn write_data_package(&mut self, lowercase_names: bool) -> Result<()> {
         let mut resources = vec![];
 
         for (table_name, table_title) in self.table_order.iter() {
-            let metadata = self.table_metadata.get_mut(table_name).expect("table should be in metadata");
+            let metadata = self
+                .table_metadata
+                .get_mut(table_name)
+                .expect("table should be in metadata");
             let mut fields = vec![];
             if metadata.rows == 0 || metadata.ignore {
                 continue;
@@ -1422,8 +1944,16 @@ impl FlatFiles {
                 if metadata.ignore_fields[order] {
                     continue;
                 }
-                let (data_type, format) = metadata.describers.get_mut(order).unwrap().guess_type();
-                let field_name = if lowercase_names {&metadata.field_titles_lc[order]} else {&metadata.fields[order]};
+                let (data_type, format) = metadata
+                    .describers
+                    .get_mut(order)
+                    .expect("should be there")
+                    .guess_type();
+                let field_name = if lowercase_names {
+                    &metadata.field_titles_lc[order]
+                } else {
+                    &metadata.fields[order]
+                };
                 let field_title = &metadata.field_titles[order];
 
                 let mut field = json!({
@@ -1435,7 +1965,10 @@ impl FlatFiles {
                 });
 
                 if self.options.stats && self.options.threads == 1 {
-                    field.as_object_mut().unwrap().insert("stats".into(), metadata.describers[order].stats());
+                    field
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("stats".into(), metadata.describers[order].stats());
                 }
 
                 fields.push(field);
@@ -1464,7 +1997,10 @@ impl FlatFiles {
             });
 
             if self.options.no_link {
-                resource["schema"].as_object_mut().expect("just made above").remove("primaryKey");
+                resource["schema"]
+                    .as_object_mut()
+                    .expect("just made above")
+                    .remove("primaryKey");
             }
 
             if !foreign_keys.is_empty() {
@@ -1611,7 +2147,7 @@ impl FlatFiles {
 
     pub fn write_csvs(&mut self) -> Result<()> {
         if self.direct {
-            return Ok(())
+            return Ok(());
         }
         self.log_info("Writing final CSV files");
         let tmp_path = self.output_dir.join("tmp");
@@ -1693,6 +2229,148 @@ impl FlatFiles {
                     })?;
                 output_row.clear();
             }
+        }
+
+        Ok(())
+    }
+
+    pub async fn write_csvs_async(&mut self) -> Result<()> {
+        if self.direct {
+            return Ok(());
+        }
+        self.log_info("Writing final CSV files");
+
+        for (table_name, table_title) in self.table_order.iter() {
+            let metadata = self.table_metadata.get(table_name).unwrap(); //key known
+            if metadata.rows == 0 || metadata.ignore {
+                continue;
+            }
+
+            let reader_path = format!(
+                "{}/tmp/{}.csv",
+                self.output_dir.to_string_lossy(),
+                table_name
+            );
+
+            let reader = self
+                .object_store
+                .as_ref()
+                .expect("object store should exist")
+                .get(&object_store::path::Path::from(reader_path))
+                .await
+                .context(ObjectStoreSnafu {})?;
+
+            let stream = reader.into_stream();
+            let reader = tokio_util::io::StreamReader::new(stream);
+
+            let gzip_reader = AsycBufReader::new(reader);
+
+            let mut csv_reader = AsyncReaderBuilder::new()
+                .has_headers(false)
+                .flexible(true)
+                .create_reader(gzip_reader);
+
+            let filepath = format!(
+                "{}/csv/{}.csv",
+                self.output_dir.to_string_lossy(),
+                table_name
+            );
+
+            let row_count = if self.options.preview == 0 {
+                metadata.rows
+            } else {
+                std::cmp::min(self.options.preview, metadata.rows)
+            };
+            self.log_info(&format!(
+                "    Writing {} row(s) to {}.csv",
+                row_count, table_title
+            ));
+            if TERMINATE.load(Ordering::SeqCst) {
+                return Err(Error::Terminated {});
+            };
+
+            let path = Path::from(filepath.clone());
+
+            let (_id, writer) = self
+                .object_store
+                .as_ref()
+                .expect("object store should exist")
+                .put_multipart(&path)
+                .await
+                .context(ObjectStoreSnafu {})?;
+            let mut csv_writer = AsyncWriterBuilder::new().create_writer(writer);
+
+            let mut non_ignored_fields = vec![];
+
+            let table_order = metadata.order.clone();
+
+            for order in table_order {
+                if !metadata.ignore_fields[order] {
+                    let field = metadata.field_titles[order].clone();
+                    let clean_field = INVALID_REGEX.replace_all(&field, " ");
+                    non_ignored_fields.push(clean_field.to_string())
+                }
+            }
+
+            csv_writer.write_record(&non_ignored_fields).await.context(
+                FlattererCSVAsyncWriteSnafu {
+                    filepath: filepath.clone(),
+                },
+            )?;
+
+            let mut output_row = csv_async::ByteRecord::new();
+
+            let mut stream = csv_reader.byte_records();
+
+            use futures::stream::StreamExt;
+
+            let mut num = 0;
+
+            while let Some(row) = stream.next().await {
+                if self.options.preview != 0 && num == self.options.preview {
+                    break;
+                }
+                let this_row = row.context(FlattererCSVAsyncWriteSnafu {
+                    filepath: &filepath,
+                })?;
+
+                let table_order = metadata.order.clone();
+
+                for order in table_order {
+                    if metadata.ignore_fields[order] {
+                        continue;
+                    }
+                    if order >= this_row.len() {
+                        output_row.push_field(b"");
+                    } else {
+                        output_row.push_field(&this_row[order]);
+                    }
+                }
+                num += 1;
+
+                csv_writer.write_byte_record(&output_row).await.context(
+                    FlattererCSVAsyncWriteSnafu {
+                        filepath: &filepath,
+                    },
+                )?;
+                output_row.clear();
+            }
+
+            csv_writer.flush().await.context(FlattererFileWriteSnafu {
+                filename: table_name,
+            })?;
+            let mut inner = csv_writer
+                .into_inner()
+                .await
+                .context(FlattererFileWriteSnafu {
+                    filename: table_name,
+                })?;
+            inner.flush().await.context(FlattererFileWriteSnafu {
+                filename: table_name,
+            })?;
+            inner.shutdown().await.context(FlattererFileWriteSnafu {
+                filename: table_name,
+            })?;
         }
 
         Ok(())
@@ -1833,7 +2511,9 @@ impl FlatFiles {
     #[cfg(not(target_family = "wasm"))]
     pub fn write_xlsx(&mut self) -> Result<()> {
         self.log_info("Writing final XLSX file");
-        let csv_path = self.output_dir.join(if self.direct {"csv"} else {"tmp"});
+        let csv_path = self
+            .output_dir
+            .join(if self.direct { "csv" } else { "tmp" });
 
         let workbook = Workbook::new_with_options(
             &self.output_dir.join("output.xlsx").to_string_lossy(),
@@ -2118,14 +2798,9 @@ impl FlatFiles {
 
         Ok(())
     }
-
 }
 
-fn value_convert(
-    value: Value,
-    describers: &mut Vec<Describer>,
-    num: usize,
-) -> String {
+fn value_convert(value: Value, describers: &mut Vec<Describer>, num: usize) -> String {
     let describer = &mut describers[num];
 
     match value {
@@ -2403,11 +3078,231 @@ pub fn flatten_to_memory<R: Read>(input: BufReader<R>, mut options: Options) -> 
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn flatten<R: Read>(
-    mut input: BufReader<R>,
+pub fn flatten_all(
+    inputs: Vec<String>,
     output: String,
-    mut options: Options,
-) -> Result<()> {
+    options: Options,
+) -> Result<FlatFiles> {
+
+    let rt = runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime");
+
+    let result = rt.block_on(async {
+        let mut final_options = options.clone();
+
+        let mut analysis_options = options.clone();
+        let mut do_analysis = false;
+
+        if output.starts_with("s3://") {
+            final_options.s3 = true;
+            final_options.memory = true;
+            do_analysis = true
+        }
+
+        if options.low_disk {
+            do_analysis = true
+        }
+
+        if !options.fields_csv.is_empty() || !options.fields_csv_string.is_empty() {
+            do_analysis = false;
+        } 
+
+        if do_analysis {
+            analysis_options.memory = true;
+            analysis_options.csv = false;
+            analysis_options.xlsx = false;
+            analysis_options.parquet = false;
+            analysis_options.sqlite = false;
+            analysis_options.s3 = false;
+            analysis_options.postgres_connection = "".into();
+
+            let mut analysis_flat_files = FlatFiles::new("".into(), analysis_options.clone())?;
+
+            for input in inputs.iter() {
+                let file = File::open(&input).context(FlattererReadSnafu {
+                    filepath: input.clone(),
+                })?;
+                analysis_flat_files = flatten_single(BufReader::new(file), analysis_flat_files).await?
+            }
+
+            analysis_flat_files.write_files()?;
+            let fields_bytes = analysis_flat_files.files_memory.get("fields.csv").expect("should exist");
+            final_options.fields_csv_string = String::from_utf8_lossy(&fields_bytes).to_string();
+            final_options.only_fields = true;
+            tracing::info!("analysis done");
+        }
+
+
+        let mut flat_files = FlatFiles::new(
+            output.clone(),
+            final_options.clone(),
+        )?;
+        let s3 = flat_files.options.s3;
+
+        info!("before final run");
+        for input in inputs {
+            let file = File::open(&input).context(FlattererReadSnafu {
+                filepath: input.clone(),
+            })?;
+            let flat_files_result = flatten_single(BufReader::new(file), flat_files).await;
+            if flat_files_result.is_err() {
+                if !s3 {
+                    remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
+                        filename: PathBuf::from(&output).to_string_lossy(),
+                    })?;
+                }
+            }
+            flat_files = flat_files_result?;
+        }
+
+        if output.starts_with("s3://") {
+            flat_files.write_files_async().await?;
+        } else {
+            flat_files = rt.spawn_blocking(move || -> Result<FlatFiles> {
+                let flat_files_result = flat_files.write_files();
+                if flat_files_result.is_err() {
+                    remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
+                        filename: PathBuf::from(&output).to_string_lossy(),
+                    })?;
+                }
+                Ok(flat_files)
+            }).await.context(JoinSnafu {})??;
+        };
+        Ok(flat_files)
+    });
+
+    result
+}
+
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn flatten_single<R: Read + Send + 'static>(
+    input: BufReader<R>,
+    mut flat_files: FlatFiles,
+) -> Result<FlatFiles> {
+    let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
+
+    let (stop_sender, stop_receiver) = bounded(1);
+
+    let options = flat_files.options.clone();
+    let options_clone = flat_files.options.clone();
+
+    let join_handler = tokio::spawn(async move {
+        let smart_path = options_clone
+            .path
+            .iter()
+            .map(SmartString::from)
+            .collect_vec();
+        let mut count = 0;
+        for item in item_receiver {
+
+            let serde_result = serde_json::from_str(&item.json);
+
+            if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            if !options_clone.path.is_empty() && item.path != smart_path {
+                continue;
+            }
+
+            if serde_result.is_err() && !options_clone.json_stream {
+                return Err(Error::FlattererProcessError {
+                    message: "Error parsing JSON, try the --json-stream option.".into(),
+                });
+            }
+
+            //tracing::trace!("recieved {}", count);
+            count += 1;
+
+            let value: Value = serde_result.context(SerdeReadSnafu {})?;
+
+            if !value.is_object() {
+                return Err(Error::FlattererProcessError {
+                    message: format!(
+                        "Value at array position {} is not an object: value is `{}`",
+                        count, value
+                    ),
+                });
+            }
+
+            let mut initial_path = vec![];
+            if smart_path.is_empty() {
+                initial_path = item.path.clone()
+            }
+
+            flat_files.process_value(value, initial_path);
+            if flat_files.options.s3 {
+                if flat_files.options.parquet {
+                    flat_files.create_arrow_cols().await?
+                } else { 
+                    tracing::trace!("Processing values");
+                    match flat_files.create_rows_async().await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            println!("Error: {e} - {e:?} ");
+                            for (_, writer) in flat_files.tmp_csvs.drain(..) {
+                                if let TmpCSVWriter::AsyncCSV(mut writer) = writer {
+                                    writer.flush().await.context(FlattererIoSnafu)?;
+                                    drop(writer)
+                                }
+                            }
+                            return Err(e);
+                        }
+                    };
+                    tracing::trace!("After processing values");
+                }
+            } else {
+                flat_files.create_rows()?
+            }
+            if count % 500000 == 0 {
+                flat_files.log_info(&format!("Processed {} values so far.", count));
+                if TERMINATE.load(Ordering::SeqCst) {
+                    log::debug!("Terminating..");
+                    return Err(Error::Terminated {});
+                };
+                if stop_receiver.try_recv().is_ok() {
+                    return Ok(flat_files); // This is really an error but it should be handled by main thread.
+                }
+            }
+        }
+
+        if count == 0 && flat_files.options.threads != 2 {
+            return Err(Error::FlattererProcessError {
+                message: "The JSON provided as input is not an array of objects".to_string(),
+            });
+        }
+        if stop_receiver.try_recv().is_ok() {
+            return Ok(flat_files); // This is really an error but it should be handled by main thread.
+        }
+        if TERMINATE.load(Ordering::SeqCst) {
+            return Err(Error::Terminated {});
+        };
+        flat_files.log_info(&format!(
+            "{}Finished processing {} value(s)",
+            options_clone.thread_name, count
+        ));
+
+        Ok(flat_files)
+    });
+
+    let send_join_handler = tokio::task::spawn_blocking(move || {
+        send_json_items(&options, input, item_sender, vec![stop_sender], None)
+    });
+
+    send_join_handler.await.context(JoinSnafu {})??;
+
+    match join_handler.await {
+        Ok(result) => {
+            result
+        }
+        Err(err) => panic::resume_unwind(Box::new(err))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub fn flatten<R: Read>(input: BufReader<R>, output: String, mut options: Options) -> Result<()> {
     if options.threads == 0 {
         options.threads = num_cpus::get()
     }
@@ -2484,6 +3379,9 @@ pub fn flatten<R: Read>(
                 {
                     continue;
                 }
+                if !options_clone.path.is_empty() && item.path != smart_path {
+                    continue;
+                }
 
                 if serde_result.is_err() && !options_clone.json_stream {
                     return Err(Error::FlattererProcessError {
@@ -2501,9 +3399,7 @@ pub fn flatten<R: Read>(
                         ),
                     });
                 }
-                if !options_clone.path.is_empty() && item.path != smart_path {
-                    continue;
-                }
+
                 let mut initial_path = vec![];
                 if smart_path.is_empty() {
                     initial_path = item.path.clone()
@@ -2547,85 +3443,13 @@ pub fn flatten<R: Read>(
     }
     drop(item_receiver_initial);
 
-    let mut outer: Vec<u8> = vec![];
-    let top_level_type;
-
-    if options.ndjson {
-        for line in input.lines() {
-            item_sender
-                .send(Item {
-                    json: line.context(FlattererReadSnafu { filepath: "input" })?,
-                    path: vec![],
-                })
-                .context(ChannelItemSnafu {})?;
-        }
-    } else {
-        {
-            let mut handler = yajlparser::ParseJson::new(
-                &mut outer,
-                Some(item_sender.clone()),
-                None,
-                options.json_stream,
-                500 * 1024 * 1024,
-            );
-
-            {
-                let mut parser = Parser::new(&mut handler);
-
-                if let Err(error) = parser.parse(&mut input) {
-                    log::debug!("Parse error, whilst in main parsing");
-                    for stop_sender in stop_senders {
-                        stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-                    }
-                    remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
-                        filename: final_output_path.to_string_lossy(),
-                    })?;
-                    return Err(Error::YAJLishParseError {
-                        error: format!("Invalid JSON due to the following error: {}", error),
-                    });
-                }
-                if let Err(error) = parser.finish_parse() {
-                    // never seems to reach parse complete on stream data
-                    if !error
-                        .to_string()
-                        .contains("Did not reach a ParseComplete status")
-                    {
-                        log::debug!("Parse error, whilst in cleaning up parsing");
-                        //stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-                        remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
-                            filename: final_output_path.to_string_lossy(),
-                        })?;
-                        return Err(Error::YAJLishParseError {
-                            error: format!("Invalid JSON due to the following error: {}", error),
-                        });
-                    }
-                }
-            }
-
-            top_level_type = handler.top_level_type.clone();
-
-            if !handler.error.is_empty() {
-                remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
-                    filename: final_output_path.to_string_lossy(),
-                })?;
-                return Err(Error::FlattererProcessError {
-                    message: handler.error,
-                });
-            }
-        }
-
-        if top_level_type == "object" && !options.json_stream {
-            let item = Item {
-                json: std::str::from_utf8(&outer)
-                    .expect("utf8 should be checked by yajl")
-                    .to_string(),
-                path: vec![],
-            };
-            item_sender.send(item).context(ChannelItemSnafu {})?;
-        }
-    }
-
-    drop(item_sender);
+    send_json_items(
+        &options,
+        input,
+        item_sender,
+        stop_senders,
+        Some(&final_output_path),
+    )?;
 
     for join_handler in join_handlers {
         match join_handler.join() {
@@ -2725,13 +3549,104 @@ pub fn flatten<R: Read>(
     Ok(())
 }
 
+
+fn send_json_items<R: Read>(
+    options: &Options,
+    mut input: BufReader<R>,
+    item_sender: Sender<Item>,
+    stop_senders: Vec<Sender<()>>,
+    final_output_path: Option<&PathBuf>,
+) -> Result<(), Error> {
+    let mut outer: Vec<u8> = vec![];
+    let top_level_type;
+    Ok(if options.ndjson {
+        for line in input.lines() {
+            item_sender
+                .send(Item {
+                    json: line.context(FlattererReadSnafu { filepath: "input" })?,
+                    path: vec![],
+                })
+                .context(ChannelItemSnafu {})?;
+        }
+    } else {
+        {
+            let mut handler = yajlparser::ParseJson::new(
+                &mut outer,
+                Some(item_sender.clone()),
+                None,
+                options.json_stream,
+                500 * 1024 * 1024,
+            );
+
+            {
+                let mut parser = Parser::new(&mut handler);
+
+                if let Err(error) = parser.parse(&mut input) {
+                    log::debug!("Parse error, whilst in main parsing");
+                    for stop_sender in stop_senders {
+                        stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+                    }
+                    if let Some(final_output_path) = final_output_path {
+                        remove_dir_all(final_output_path).context(FlattererRemoveDirSnafu {
+                            filename: final_output_path.to_string_lossy(),
+                        })?;
+                    }
+                    return Err(Error::YAJLishParseError {
+                        error: format!("Invalid JSON due to the following error: {}", error),
+                    });
+                }
+                if let Err(error) = parser.finish_parse() {
+                    // never seems to reach parse complete on stream data
+                    if !error
+                        .to_string()
+                        .contains("Did not reach a ParseComplete status")
+                    {
+                        log::debug!("Parse error, whilst in cleaning up parsing");
+                        //stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+                        if let Some(final_output_path) = final_output_path {
+                            remove_dir_all(final_output_path).context(FlattererRemoveDirSnafu {
+                                filename: final_output_path.to_string_lossy(),
+                            })?;
+                        }
+                        return Err(Error::YAJLishParseError {
+                            error: format!("Invalid JSON due to the following error: {}", error),
+                        });
+                    }
+                }
+            }
+
+            top_level_type = handler.top_level_type.clone();
+
+            if !handler.error.is_empty() {
+                if let Some(final_output_path) = final_output_path {
+                    remove_dir_all(final_output_path).context(FlattererRemoveDirSnafu {
+                        filename: final_output_path.to_string_lossy(),
+                    })?;
+                }
+                return Err(Error::FlattererProcessError {
+                    message: handler.error,
+                });
+            }
+        }
+
+        if top_level_type == "object" && !options.json_stream {
+            let item = Item {
+                json: std::str::from_utf8(&outer)
+                    .expect("utf8 should be checked by yajl")
+                    .to_string(),
+                path: vec![],
+            };
+            item_sender.send(item).context(ChannelItemSnafu {})?;
+        }
+    })
+}
+
 #[cfg(not(target_family = "wasm"))]
 pub fn flatten_simple<R: Read>(
     mut input: BufReader<R>,
     output: String,
     options: Options,
 ) -> Result<()> {
-
     let output_path = PathBuf::from(output);
 
     let mut flat_files = FlatFiles::new(
@@ -2773,6 +3688,7 @@ pub fn flatten_simple<R: Read>(
                     error: format!("Invalid JSON due to the following error: {}", error),
                 });
             }
+
             if let Err(error) = parser.finish_parse() {
                 // never seems to reach parse complete on stream data
                 if !error
@@ -2807,16 +3723,13 @@ pub fn flatten_simple<R: Read>(
                 message: "The JSON provided as input is not an array of objects".to_string(),
             });
         }
-        flat_files.log_info(&format!(
-            "Finished processing {} value(s)",
-            handler.count
-        ));
+        flat_files.log_info(&format!("Finished processing {} value(s)", handler.count));
     }
 
     if top_level_type == "object" && !options.json_stream {
         let json_str = std::str::from_utf8(&outer)
-                .expect("utf8 should be checked by yajl")
-                .to_string();
+            .expect("utf8 should be checked by yajl")
+            .to_string();
 
         let serde_value: Value = serde_json::from_str(&json_str).context(SerdeReadSnafu {})?;
 
@@ -2828,7 +3741,6 @@ pub fn flatten_simple<R: Read>(
 
     Ok(())
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -2844,6 +3756,7 @@ mod tests {
         let output_path = output_dir.to_string_lossy().into_owned();
 
         let mut flatten_options = Options::builder().build();
+        flatten_options.force = true;
 
         flatten_options.csv = true;
         if name != "illegal.json" {
@@ -2923,6 +3836,11 @@ mod tests {
             }
         }
 
+        if let Some(low_disk) = options["low_disk"].as_bool() {
+            flatten_options.low_disk = low_disk;
+            name.push_str("-low_disk")
+        }
+
         if let Some(path_values) = options["path"].as_array() {
             let path = path_values
                 .iter()
@@ -2939,8 +3857,21 @@ mod tests {
 
         flatten_options.stats = true;
 
-        let result = flatten(
-            BufReader::new(File::open(file).unwrap()),
+        // let result = flatten(
+        //     BufReader::new(File::open(file).unwrap()),
+        //     output_path.clone(),
+        //     flatten_options,
+        // );
+
+        let mut inputs: Vec<String> = vec![file.into()];
+
+        if let Some(extra_file) = options["extra_file"].as_str() {
+            name.push_str("-extrafile");
+            inputs.push(extra_file.into());
+        }
+
+        let result = flatten_all(
+            inputs,
             output_path.clone(),
             flatten_options,
         );
@@ -2987,7 +3918,7 @@ mod tests {
     }
 
     #[test]
-    fn full_test() {
+    fn full_test_simple() {
         for extention in ["json", "jl"] {
             test_output(
                 &format!("fixtures/basic.{}", extention),
@@ -3259,6 +4190,62 @@ mod tests {
     }
 
     #[test]
+    fn test_multi_file() {
+        test_output(
+            "fixtures/basic.json",
+            vec![],
+            json!({"extra_file": "fixtures/basic.json"}),
+        )
+    }
+
+    #[test]
+    fn test_low_disk() {
+        test_output(
+            "fixtures/basic.json",
+            vec![],
+            json!({"low_disk": true}),
+        )
+    }
+
+    #[test]
+    fn test_s3() {
+        use tracing_subscriber::FmtSubscriber;
+
+        // Initialize the subscriber with an environment filter to set the log level
+        let subscriber = FmtSubscriber::builder()
+            .with_max_level(tracing::Level::TRACE)
+            .finish();
+    
+        // Use the subscriber as the default tracing subscriber
+        tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
+        
+        if std::env::var("AWS_DEFAULT_REGION").is_ok() {
+            let options = Options::builder()
+            .parquet(true)
+            .json_stream(true)
+            .build();
+
+            flatten_all(
+                vec!["fixtures/daily_16.json".into()], // reader
+                "s3://flatterer-test/3".into(),                       // output directory
+                options,
+            )
+            .unwrap();
+
+            let options = Options::builder()
+            .json_stream(true)
+            .build();
+
+            flatten_all(
+                vec!["fixtures/daily_16.json".into()], // reader
+                "s3://flatterer-test/3".into(),                       // output directory
+                options,
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
     fn check_nesting() {
         let myjson = json!({
             "a": "a",
@@ -3468,13 +4455,9 @@ mod tests {
         assert!(PathBuf::from(tmp_dir.path().join("output.xlsx")).exists());
     }
 
-
     #[test]
     fn test_multi_speed() {
-        let options = Options::builder()
-            .json_stream(true)
-            .force(true)
-            .build();
+        let options = Options::builder().json_stream(true).force(true).build();
 
         let tmp_dir = TempDir::new().unwrap();
 
@@ -3488,10 +4471,7 @@ mod tests {
 
     #[test]
     fn test_simple_speed() {
-        let options = Options::builder()
-            .json_stream(true)
-            .force(true)
-            .build();
+        let options = Options::builder().json_stream(true).force(true).build();
 
         let tmp_dir = TempDir::new().unwrap();
 
@@ -3502,6 +4482,7 @@ mod tests {
         )
         .unwrap();
     }
+
 
     #[test]
     fn test_evolve() {
