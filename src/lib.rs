@@ -1432,17 +1432,13 @@ impl FlatFiles {
                 if !output_row.is_empty() {
                     table_metadata.rows += 1;
 
-                    //tracing::trace!("writing row {}", output_row[0]);
-
                     #[cfg(not(target_family = "wasm"))]
                     if let TmpCSVWriter::AsyncCSV(writer) = writer {
-                        //tracing::trace!("writing record");
                         writer.write_record(&output_row).await.context(
                             FlattererCSVAsyncWriteSnafu {
                                 filepath: &table_metadata.output_path,
                             },
                         )?;
-                        //tracing::trace!("after writing record");
                     }
                     if let TmpCSVWriter::Memory(writer) = writer {
                         writer
@@ -3131,7 +3127,6 @@ pub fn flatten_all(
             let fields_bytes = analysis_flat_files.files_memory.get("fields.csv").expect("should exist");
             final_options.fields_csv_string = String::from_utf8_lossy(&fields_bytes).to_string();
             final_options.only_fields = true;
-            tracing::info!("analysis done");
         }
 
 
@@ -3213,9 +3208,6 @@ pub async fn flatten_single<R: Read + Send + 'static>(
                 });
             }
 
-            //tracing::trace!("recieved {}", count);
-            count += 1;
-
             let value: Value = serde_result.context(SerdeReadSnafu {})?;
 
             if !value.is_object() {
@@ -3227,6 +3219,8 @@ pub async fn flatten_single<R: Read + Send + 'static>(
                 });
             }
 
+            count += 1;
+
             let mut initial_path = vec![];
             if smart_path.is_empty() {
                 initial_path = item.path.clone()
@@ -3237,11 +3231,9 @@ pub async fn flatten_single<R: Read + Send + 'static>(
                 if flat_files.options.parquet {
                     flat_files.create_arrow_cols().await?
                 } else { 
-                    tracing::trace!("Processing values");
                     match flat_files.create_rows_async().await {
                         Ok(_) => {}
                         Err(e) => {
-                            println!("Error: {e} - {e:?} ");
                             for (_, writer) in flat_files.tmp_csvs.drain(..) {
                                 if let TmpCSVWriter::AsyncCSV(mut writer) = writer {
                                     writer.flush().await.context(FlattererIoSnafu)?;
@@ -3251,7 +3243,6 @@ pub async fn flatten_single<R: Read + Send + 'static>(
                             return Err(e);
                         }
                     };
-                    tracing::trace!("After processing values");
                 }
             } else {
                 flat_files.create_rows()?
@@ -3878,7 +3869,7 @@ mod tests {
 
         if let Err(error) = result {
             if let Some(error_text) = options["error_text"].as_str() {
-                assert!(error.to_string().contains(error_text))
+                assert!(error.to_string().contains(error_text), "error was {}", error.to_string())
             } else {
                 panic!(
                     "Error raised and there is no error_text to match it. Error was \n{}",
@@ -4209,15 +4200,6 @@ mod tests {
 
     #[test]
     fn test_s3() {
-        use tracing_subscriber::FmtSubscriber;
-
-        // Initialize the subscriber with an environment filter to set the log level
-        let subscriber = FmtSubscriber::builder()
-            .with_max_level(tracing::Level::TRACE)
-            .finish();
-    
-        // Use the subscriber as the default tracing subscriber
-        tracing::subscriber::set_global_default(subscriber).expect("Failed to set subscriber");
         
         if std::env::var("AWS_DEFAULT_REGION").is_ok() {
             let options = Options::builder()
