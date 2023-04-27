@@ -128,7 +128,6 @@ use yajlish::Parser;
 #[cfg(not(target_family = "wasm"))]
 use yajlparser::Item;
 
-use arrow_array::builder;
 use csv_async::{AsyncReaderBuilder, AsyncWriter, AsyncWriterBuilder};
 #[cfg(not(target_family = "wasm"))]
 use object_store::aws::AmazonS3Builder;
@@ -477,14 +476,15 @@ struct TableMetadata {
     #[serde(skip_serializing)]
     describers: Vec<Describer>,
     #[serde(skip_serializing)]
-    arrow_builders: Vec<ArrayBuilders>,
+    arrow_vecs: Vec<ArrayBuilders>,
 }
 
 #[derive(Debug)]
 enum ArrayBuilders {
-    Boolean(arrow_array::builder::BooleanBuilder),
-    Integer(arrow_array::builder::Int64Builder),
-    String(arrow_array::builder::LargeStringBuilder),
+    Boolean(Vec<Option<bool>>),
+    Integer(Vec<Option<i64>>),
+    Number(Vec<Option<f64>>),
+    String(Vec<Option<String>>),
 }
 
 impl TableMetadata {
@@ -519,7 +519,7 @@ impl TableMetadata {
             field_titles_lc: vec![],
             describers: vec![],
             supplied_types: vec![],
-            arrow_builders: vec![],
+            arrow_vecs: vec![],
         }
     }
 }
@@ -1198,19 +1198,19 @@ impl FlatFiles {
                     let value_option = row.get_mut(field);
                     table_metadata.field_counts[num] += 1;
 
-                    match &mut table_metadata.arrow_builders[num] {
+                    match &mut table_metadata.arrow_vecs[num] {
                         ArrayBuilders::Boolean(b) => {
                             if value_option.is_none() {
-                                b.append_null();
+                                b.push(None);
                                 continue;
                             }
                             let value = value_option.expect("checked above");
                             match value {
-                                Value::Null => b.append_null(),
-                                Value::Bool(bool) => b.append_value(*bool),
+                                Value::Null => b.push(None),
+                                Value::Bool(bool) => b.push(Some(*bool)),
                                 Value::String(str) => {
                                     match str.parse::<bool>() {
-                                        Ok(bool) => b.append_value(bool),
+                                        Ok(bool) => b.push(Some(bool)),
                                         Err(_) => return Err(Error::FlattererProcessError {
                                             message: format!(
                                                 "Unable to parse {str} as bool in field {field}"
@@ -1229,22 +1229,22 @@ impl FlatFiles {
                         }
                         ArrayBuilders::Integer(integer) => {
                             if value_option.is_none() {
-                                integer.append_null();
+                                integer.push(None);
                                 continue;
                             }
                             let value = value_option.expect("checked above");
                             match value {
-                                Value::Null => integer.append_null(),
-                                Value::Number(num) => integer.append_value(num.as_i64().ok_or(
+                                Value::Null => integer.push(None),
+                                Value::Number(num) => integer.push(Some(num.as_i64().ok_or(
                                     Error::FlattererProcessError {
                                         message: format!(
                                             "Unable to parse {num} as integer in field {field}"
                                         ),
                                     },
-                                )?),
+                                )?)),
                                 Value::String(str) => {
                                     match str.parse::<i64>() {
-                                        Ok(parsed) => integer.append_value(parsed),
+                                        Ok(parsed) => integer.push(Some(parsed)),
                                         Err(_) => return Err(Error::FlattererProcessError {
                                             message: format!(
                                                 "Unable to parse {str} as integer in field {field}"
@@ -1263,14 +1263,37 @@ impl FlatFiles {
                         }
                         ArrayBuilders::String(string) => {
                             if value_option.is_none() {
-                                string.append_null();
+                                string.push(None);
                                 continue;
                             }
                             let value = value_option.expect("checked above");
                             match value {
-                                Value::Null => string.append_null(),
-                                Value::String(str) => string.append_value(str),
-                                val => string.append_value(val.to_string()),
+                                Value::Null => string.push(None),
+                                Value::String(str) => string.push(Some(str.to_string())),
+                                val => string.push(Some(val.to_string())),
+                            }
+                        }
+                        ArrayBuilders::Number(number) => {
+                            if value_option.is_none() {
+                                number.push(None);
+                                continue;
+                            }
+                            let value = value_option.expect("checked above");
+                            match value {
+                                Value::Null => number.push(None),
+                                Value::String(str) => number.push(Some(str.parse().unwrap())),
+                                Value::Number(num) => number.push(Some(num.as_f64().ok_or(
+                                    Error::FlattererProcessError {
+                                        message: format!(
+                                            "Unable to parse {num} as float in field {field}"
+                                        ),
+                                    },
+                                )?)),
+                                _ => return Err(Error::FlattererProcessError {
+                                        message: format!(
+                                            "Unable to parse {value} as number in field {field}"
+                                        ),
+                                    })
                             }
                         }
                     }
@@ -1281,22 +1304,30 @@ impl FlatFiles {
 
             use std::sync::Arc;
 
-            for (index, array_builder) in table_metadata.arrow_builders.iter_mut().enumerate() {
+            for (index, array_builder) in table_metadata.arrow_vecs.iter_mut().enumerate() {
                 let field_name = &table_metadata.field_titles[index];
                 match array_builder {
                     ArrayBuilders::String(b) => {
-                        arrow_arrays.push((field_name, Arc::new(b.finish())))
+                        let array = Arc::new(arrow_array::array::LargeStringArray::from_iter(b.drain(..)));
+                        arrow_arrays.push((field_name, array))
                     }
                     ArrayBuilders::Boolean(b) => {
-                        arrow_arrays.push((field_name, Arc::new(b.finish())))
+                        let array = Arc::new(arrow_array::array::BooleanArray::from_iter(b.drain(..)));
+                        arrow_arrays.push((field_name, array))
                     }
                     ArrayBuilders::Integer(b) => {
-                        arrow_arrays.push((field_name, Arc::new(b.finish())))
+                        let array = Arc::new(arrow_array::array::Int64Array::from_iter(b.drain(..)));
+                        arrow_arrays.push((field_name, array))
+                    }
+                    ArrayBuilders::Number(b) => {
+                        let array = Arc::new(arrow_array::array::Float64Array::from_iter(b.drain(..)));
+                        arrow_arrays.push((field_name, array))
                     }
                 }
             }
             let record_batch = arrow_array::RecordBatch::try_from_iter(arrow_arrays)
                 .expect("should be well formed arrays");
+
 
             if !self.tmp_csvs.contains_key(table) {
                 let file_path = format!(
@@ -1316,6 +1347,7 @@ impl FlatFiles {
 
                 let props = parquet::file::properties::WriterProperties::builder()
                     .set_compression(parquet::basic::Compression::SNAPPY)
+                    .set_max_row_group_size(1024 * 50)
                     .build();
 
                 let parquet_writer =
@@ -1330,6 +1362,7 @@ impl FlatFiles {
             if let TmpCSVWriter::AsyncParquet(parquet_writer) = writer {
                 parquet_writer.write(&record_batch).await.context(ParquetSnafu {})?;
             }
+
         }
         for val in self.table_rows.values_mut() {
             val.clear();
@@ -1579,21 +1612,24 @@ impl FlatFiles {
                     table_metadata.supplied_types.push(field_type.clone());
                     match field_type.as_str() {
                         "boolean" => table_metadata
-                            .arrow_builders
-                            .push(ArrayBuilders::Boolean(builder::BooleanBuilder::new())),
+                            .arrow_vecs
+                            .push(ArrayBuilders::Boolean(vec![])),
+                        "number" => table_metadata
+                            .arrow_vecs
+                            .push(ArrayBuilders::Number(vec![])),
                         "integer" => table_metadata
-                            .arrow_builders
-                            .push(ArrayBuilders::Integer(builder::Int64Builder::new())),
+                            .arrow_vecs
+                            .push(ArrayBuilders::Integer(vec![])),
                         _ => table_metadata
-                            .arrow_builders
-                            .push(ArrayBuilders::String(builder::LargeStringBuilder::new())),
+                            .arrow_vecs
+                            .push(ArrayBuilders::String(vec![])),
                     }
                 }
                 None => {
                     table_metadata.supplied_types.push("string".into());
                     table_metadata
-                        .arrow_builders
-                        .push(ArrayBuilders::String(builder::LargeStringBuilder::new()))
+                        .arrow_vecs
+                        .push(ArrayBuilders::String(vec![]))
                 }
             }
         }
@@ -4209,7 +4245,7 @@ mod tests {
 
             flatten_all(
                 vec!["fixtures/daily_16.json".into()], // reader
-                "s3://flatterer-test/3".into(),                       // output directory
+                "s3://flatterer-test/6".into(),                       // output directory
                 options,
             )
             .unwrap();
@@ -4220,7 +4256,7 @@ mod tests {
 
             flatten_all(
                 vec!["fixtures/daily_16.json".into()], // reader
-                "s3://flatterer-test/3".into(),                       // output directory
+                "s3://flatterer-test/6".into(),                       // output directory
                 options,
             )
             .unwrap();

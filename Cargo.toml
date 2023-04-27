@@ -36,11 +36,11 @@ url = "2.3.1"
 tokio = { version = "1.27.0", features = ["rt"] }
 csv-async = { version = "1.2.6", features = ["tokio"] }
 futures-util = { version = "0.3.27" }
-parquet = {version = "37.0.0", features = ["async"] }
+parquet = {version = "38.0.0", features = ["async"] }
 tokio-util = { version = "0.7.7", features = ["io", "io-util"] }
 futures = {version = "0.3.28"}
-arrow-array = "37.0.0"
-arrow-schema = "37.0.0"
+arrow-array = "38.0.0"
+arrow-schema = "38.0.0"
 #tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 #tracing = "0.1.37"
 
