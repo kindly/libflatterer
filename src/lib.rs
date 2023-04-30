@@ -1305,7 +1305,7 @@ impl FlatFiles {
                 }
             }
 
-            let mut arrow_arrays: Vec<(&String, arrow_array::array::ArrayRef)> = vec![];
+            let mut arrow_arrays: Vec<(&String, arrow_array::array::ArrayRef, bool)> = vec![];
 
             use std::sync::Arc;
 
@@ -1314,23 +1314,23 @@ impl FlatFiles {
                 match array_builder {
                     ArrayBuilders::String(b) => {
                         let array = Arc::new(arrow_array::array::LargeStringArray::from_iter(b.drain(..)));
-                        arrow_arrays.push((field_name, array))
+                        arrow_arrays.push((field_name, array, true))
                     }
                     ArrayBuilders::Boolean(b) => {
                         let array = Arc::new(arrow_array::array::BooleanArray::from_iter(b.drain(..)));
-                        arrow_arrays.push((field_name, array))
+                        arrow_arrays.push((field_name, array, true))
                     }
                     ArrayBuilders::Integer(b) => {
                         let array = Arc::new(arrow_array::array::Int64Array::from_iter(b.drain(..)));
-                        arrow_arrays.push((field_name, array))
+                        arrow_arrays.push((field_name, array, true))
                     }
                     ArrayBuilders::Number(b) => {
                         let array = Arc::new(arrow_array::array::Float64Array::from_iter(b.drain(..)));
-                        arrow_arrays.push((field_name, array))
+                        arrow_arrays.push((field_name, array, true))
                     }
                 }
             }
-            let record_batch = arrow_array::RecordBatch::try_from_iter(arrow_arrays)
+            let record_batch = arrow_array::RecordBatch::try_from_iter_with_nullable(arrow_arrays)
                 .expect("should be well formed arrays");
 
 
@@ -3121,100 +3121,93 @@ pub fn flatten_all(
     options: Options,
 ) -> Result<FlatFiles> {
 
-    let rt = runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to create tokio runtime");
+    let mut final_options = options.clone();
 
-    let result = rt.block_on(async {
-        let mut final_options = options.clone();
+    let mut analysis_options = options.clone();
+    let mut do_analysis = false;
 
-        let mut analysis_options = options.clone();
-        let mut do_analysis = false;
+    if output.starts_with("s3://") {
+        final_options.s3 = true;
+        final_options.memory = true;
+        do_analysis = true;
+        if options.xlsx || options.sqlite || !options.postgres_connection.is_empty() {
+            return Err(Error::FlattererOptionError { message: "When writing to s3 can only choose CSV or Parquet outputs".into() })
+        }
+    }
 
-        if output.starts_with("s3://") {
-            final_options.s3 = true;
-            final_options.memory = true;
-            do_analysis = true;
-            if options.xlsx || options.sqlite || !options.postgres_connection.is_empty() {
-                return Err(Error::FlattererOptionError { message: "When writing to s3 can only choose CSV or Parquet outputs".into() })
-            }
+    if options.low_disk {
+        do_analysis = true
+    }
+
+    if (!options.fields_csv.is_empty() || !options.fields_csv_string.is_empty()) && options.only_fields {
+        do_analysis = false;
+    } 
+
+    if do_analysis {
+        info!("doing analysis");
+        if inputs.contains(&"-".to_string()) {
+            return Err(Error::FlattererOptionError { message: "Can not use stdin when using `low_disk` or exporting to s3 without supplying fields.csv".into() })
+        }
+        analysis_options.memory = true;
+        analysis_options.csv = false;
+        analysis_options.xlsx = false;
+        analysis_options.parquet = false;
+        analysis_options.sqlite = false;
+        analysis_options.s3 = false;
+        analysis_options.postgres_connection = "".into();
+
+        let mut analysis_flat_files = FlatFiles::new("".into(), analysis_options.clone())?;
+
+        for input in inputs.iter() {
+            analysis_flat_files = flatten_single(input.into(), analysis_flat_files)?
         }
 
-        if options.low_disk {
-            do_analysis = true
-        }
+        analysis_flat_files.write_files()?;
+        let fields_bytes = analysis_flat_files.files_memory.get("fields.csv").expect("should exist");
+        final_options.fields_csv_string = String::from_utf8_lossy(&fields_bytes).to_string();
+        final_options.only_fields = true;
+    }
 
-        if (!options.fields_csv.is_empty() || !options.fields_csv_string.is_empty()) && options.only_fields {
-            do_analysis = false;
-        } 
 
-        if do_analysis {
-            if inputs.contains(&"-".to_string()) {
-                return Err(Error::FlattererOptionError { message: "Can not use stdin when using `low_disk` or exporting to s3 without supplying fields.csv".into() })
+    let mut flat_files = FlatFiles::new(
+        output.clone(),
+        final_options.clone(),
+    )?;
+    let s3 = flat_files.options.s3;
+
+    info!("doing final run");
+    for input in inputs {
+        let flat_files_result = flatten_single(input, flat_files);
+
+        if flat_files_result.is_err() {
+            if !s3 {
+                remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
+                    filename: PathBuf::from(&output).to_string_lossy(),
+                })?;
             }
-            analysis_options.memory = true;
-            analysis_options.csv = false;
-            analysis_options.xlsx = false;
-            analysis_options.parquet = false;
-            analysis_options.sqlite = false;
-            analysis_options.s3 = false;
-            analysis_options.postgres_connection = "".into();
-
-            let mut analysis_flat_files = FlatFiles::new("".into(), analysis_options.clone())?;
-
-            for input in inputs.iter() {
-                let buf_reader = get_buf_read(input.into(), options.gzip_input).await?;
-                analysis_flat_files = flatten_single(buf_reader, analysis_flat_files).await?
-            }
-
-            analysis_flat_files.write_files()?;
-            let fields_bytes = analysis_flat_files.files_memory.get("fields.csv").expect("should exist");
-            final_options.fields_csv_string = String::from_utf8_lossy(&fields_bytes).to_string();
-            final_options.only_fields = true;
         }
+        flat_files = flat_files_result?;
+    }
 
+    if output.starts_with("s3://") {
+        let rt = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
 
-        let mut flat_files = FlatFiles::new(
-            output.clone(),
-            final_options.clone(),
-        )?;
-        let s3 = flat_files.options.s3;
-
-        info!("before final run");
-        for input in inputs {
-            let buf_reader = get_buf_read(input, options.gzip_input).await?;
-            info!("buf reader got");
-
-            let flat_files_result = flatten_single(buf_reader, flat_files).await;
-
-            if flat_files_result.is_err() {
-                if !s3 {
-                    remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
-                        filename: PathBuf::from(&output).to_string_lossy(),
-                    })?;
-                }
-            }
-            flat_files = flat_files_result?;
-        }
-
-        if output.starts_with("s3://") {
+        rt.block_on( async {
             flat_files.write_files_async().await?;
-        } else {
-            flat_files = rt.spawn_blocking(move || -> Result<FlatFiles> {
-                let flat_files_result = flat_files.write_files();
-                if flat_files_result.is_err() {
-                    remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
-                        filename: PathBuf::from(&output).to_string_lossy(),
-                    })?;
-                }
-                Ok(flat_files)
-            }).await.context(JoinSnafu {})??;
-        };
+            Ok(flat_files)
+        })
+    } else {
+        let flat_files_result = flat_files.write_files();
+        if flat_files_result.is_err() {
+            remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
+                filename: PathBuf::from(&output).to_string_lossy(),
+            })?;
+        }
         Ok(flat_files)
-    });
-
-    result
+    }
 }
 
 async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Send>, Error> {
@@ -3226,7 +3219,9 @@ async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Sen
         let async_reader = tokio_util::io::StreamReader::new(stream);
 
         if input.ends_with(".gz") || gzip{
-            let deflate_reader = tokio::io::BufReader::new(GzipDecoder::new(async_reader));
+            let mut gzip_decoder = GzipDecoder::new(async_reader);
+            gzip_decoder.multiple_members(true);
+            let deflate_reader = tokio::io::BufReader::new(gzip_decoder);
             let reader = tokio_util::io::SyncIoBridge::new(deflate_reader);
             Box::new(reader)
         } else {
@@ -3249,7 +3244,9 @@ async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Sen
         let async_reader = tokio_util::io::StreamReader::new(stream);
 
         if input.ends_with(".gz") || gzip {
-            let deflate_reader = tokio::io::BufReader::new(GzipDecoder::new(async_reader));
+            let mut gzip_decoder = GzipDecoder::new(async_reader);
+            gzip_decoder.multiple_members(true);
+            let deflate_reader = tokio::io::BufReader::new(gzip_decoder);
             let reader = tokio_util::io::SyncIoBridge::new(deflate_reader);
             Box::new(reader)
         } else {
@@ -3258,7 +3255,7 @@ async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Sen
         }
     } else if input == "-" {
         if gzip {
-            let gz_reader = flate2::read::GzDecoder::new(std::io::stdin());
+            let gz_reader = flate2::read::MultiGzDecoder::new(std::io::stdin());
             Box::new(BufReader::new(gz_reader))
         } else {
             Box::new(BufReader::new(std::io::stdin()))
@@ -3268,7 +3265,8 @@ async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Sen
             filepath: input.clone(),
         })?;
         if input.ends_with(".gz") || gzip {
-            let gz_reader = flate2::read::GzDecoder::new(file);
+            info!("gzip reader");
+            let gz_reader = flate2::read::MultiGzDecoder::new(file);
             Box::new(BufReader::new(gz_reader))
         } else {
             Box::new(BufReader::new(file))
@@ -3279,8 +3277,8 @@ async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Sen
 
 
 #[cfg(not(target_family = "wasm"))]
-pub async fn flatten_single(
-    input: Box<dyn BufRead + Send>,
+pub fn flatten_single(
+    input: String,
     flat_files: FlatFiles,
 ) -> Result<FlatFiles> {
     info!("flatten single");
@@ -3291,20 +3289,49 @@ pub async fn flatten_single(
     let options = flat_files.options.clone();
     let options_clone = flat_files.options.clone();
 
-    let join_handler = tokio::spawn(async move {
-        let mut reciever = item_receiver;
-        item_reviever(options_clone, &mut reciever, flat_files, stop_receiver).await.unwrap()
+    let join_handler = thread::spawn(move || { 
+
+        let rt = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
+
+        rt.block_on( async {
+            let mut reciever = item_receiver;
+            item_reviever(options_clone, &mut reciever, flat_files, stop_receiver).await
+        })
+        
     });
 
-    let send_join_handler = tokio::task::spawn_blocking(move || {
-        send_json_items(&options, input, item_sender, vec![stop_sender], None)
+    let send_join_handler = thread::spawn(move || {
+
+        let rt = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
+
+        rt.block_on( async {
+            let buf_read = get_buf_read(input, options.gzip_input).await?;
+            rt.spawn_blocking(move || {
+                send_json_items(&options, buf_read, item_sender, vec![stop_sender], None)
+            }).await.context(JoinSnafu)
+        })
+
     });
 
-    send_join_handler.await.context(JoinSnafu {})??;
-
-    match join_handler.await {
+    match send_join_handler.join() {
         Ok(result) => {
-            Ok(result)
+            if let Err(err) = result {
+                log::debug!("Error on thread join {}", err);
+                return Err(err);
+            }
+        }
+        Err(err) => panic::resume_unwind(err),
+    }
+
+    match join_handler.join() {
+        Ok(result) => {
+            result
         }
         Err(err) => panic::resume_unwind(Box::new(err))
     }
@@ -3319,7 +3346,6 @@ async fn item_reviever(options_clone: Options, item_receiver: &mut Receiver<Item
     let mut count = 0;
     info!("in item reciever");
     for item in item_receiver.iter() {
-        info!("recieve item {count}");
         let serde_result = serde_json::from_str(&item.json);
 
         if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace) {
@@ -3345,8 +3371,6 @@ async fn item_reviever(options_clone: Options, item_receiver: &mut Receiver<Item
                 ),
             });
         }
-
-        info!("value ok");
 
         count += 1;
 
@@ -3376,7 +3400,6 @@ async fn item_reviever(options_clone: Options, item_receiver: &mut Receiver<Item
         } else {
             flat_files.create_rows()?
         }
-        info!("created_rows");
         if count % 500000 == 0 {
             flat_files.log_info(&format!("Processed {} values so far.", count));
             if TERMINATE.load(Ordering::SeqCst) {
@@ -3665,16 +3688,13 @@ fn send_json_items(
     let mut outer: Vec<u8> = vec![];
     let top_level_type;
     if options.ndjson {
-        info!("ndjson send");
-        for (num, line) in input.lines().enumerate() {
-            info!("before send item {num}");
+        for line in input.lines() {
             item_sender
                 .send(Item {
                     json: line.context(FlattererReadSnafu { filepath: "input" })?,
                     path: vec![],
                 })
                 .context(ChannelItemSnafu {})?;
-            info!("after send item {num}");
         }
     } else {
         {
@@ -4381,19 +4401,22 @@ mod tests {
     }
 
     #[test]
-    fn test_bods() {
+    fn test_download_upload_s3() {
         env_logger::init();
         if std::env::var("AWS_DEFAULT_REGION").is_ok() {
             let options = Options::builder()
-            //.parquet(true)
+            .parquet(true)
             .ndjson(true)
             .force(true)
             .build();
 
             flatten_all(
+                //vec!["statements.2023-03-08T11:08:56Z.jsonl.gz".into()], // reader
+                //vec!["statsmall.jsonl".into()], // reader
+                //vec!["statements.2023-03-08T11:08:56Z.jsonl.gz".into()], // reader
                 //vec!["https://oo-register-production.s3-eu-west-1.amazonaws.com/public/exports/statements.2023-03-08T11:08:56Z.jsonl.gz".into()], // reader
-                vec!["https://flatterer-test.s3.eu-west-2.amazonaws.com/data/daily_16.json".into()], // reader
-                "bods".into(),                       // output directory
+                vec!["https://flatterer-test.s3.eu-west-2.amazonaws.com/data/daily_16.json.gz".into()], // reader
+                "s3://flatterer-test/1".into(),                       // output directory
                 options,
             )
             .unwrap();
@@ -4726,21 +4749,5 @@ mod tests {
         )
     }
 
-    #[test]
-    fn test_object_store_sync() {
-        let rt = runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime");
-
-        rt.block_on(async {
-            let buf_read = get_buf_read("https://flatterer-test.s3.eu-west-2.amazonaws.com/data/daily_16.json".into(), false).await;
-            tokio::task::spawn_blocking(move || {
-                for _line in buf_read.unwrap().lines() {
-                    println!("a");
-                }
-            }).await.unwrap()
-        });
-    }
 }
 
