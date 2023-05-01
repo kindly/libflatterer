@@ -90,6 +90,7 @@ use std::io::{BufReader, Read, Write};
 #[cfg(not(target_family = "wasm"))]
 use std::io::{self};
 use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[cfg(not(target_family = "wasm"))]
@@ -141,6 +142,8 @@ use tokio::io::{AsyncWrite, BufReader as AsycBufReader};
 use tokio::sync::mpsc;
 use tokio::runtime;
 use async_compression::tokio::bufread::GzipDecoder;
+use jsonpath_rust::{JsonPathFinder, JsonPathInst};
+
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -438,6 +441,8 @@ pub struct Options {
     pub low_disk: bool,
     #[builder(default)]
     pub gzip_input: bool,
+    #[builder(default)]
+    pub json_path_selector: String,
 }
 
 pub struct FlatFiles {
@@ -462,6 +467,7 @@ pub struct FlatFiles {
     pub files_memory: HashMap<String, Vec<u8>>,
     direct: bool,
     object_store: Option<Box<dyn ObjectStore>>,
+    json_path: Option<JsonPathFinder>,
 }
 
 #[derive(Serialize, Debug)]
@@ -651,6 +657,13 @@ impl FlatFiles {
             new_output_dir.remove(0);
         }
 
+        let json_path = if options.json_path_selector.is_empty() {
+            None
+        } else {
+            let jsonpath = JsonPathInst::from_str(&options.json_path_selector).unwrap();
+            Some(JsonPathFinder::new(Box::new(json!({})), Box::new(jsonpath)))
+        }; 
+
         let mut flat_files = Self {
             output_dir: new_output_dir.into(),
             options,
@@ -673,6 +686,7 @@ impl FlatFiles {
             files_memory: HashMap::new(),
             direct,
             object_store,
+            json_path
         };
 
         #[cfg(not(target_family = "wasm"))]
@@ -1495,6 +1509,17 @@ impl FlatFiles {
     }
 
     pub fn process_value(&mut self, value: Value, initial_path: Vec<SmartString>) {
+
+        if let Some(json_path) = self.json_path.as_mut() {
+            json_path.set_json(Box::new(value.clone()));
+            let output = json_path.find_slice();
+            for result in output {
+                if let jsonpath_rust::JsonPathValue::NoValue = result {
+                    return;
+                }
+            }
+        }
+
         if let Value::Object(obj) = value {
             let has_path = !initial_path.is_empty();
             if initial_path != self.current_path {
@@ -3321,6 +3346,7 @@ pub fn flatten_single(
 
     match send_join_handler.join() {
         Ok(result) => {
+            let result = result?;
             if let Err(err) = result {
                 log::debug!("Error on thread join {}", err);
                 return Err(err);
@@ -3981,6 +4007,12 @@ mod tests {
             flatten_options.path = path;
         }
 
+        if let Some(json_path) = options["json_path"].as_str() {
+            flatten_options.json_path_selector = json_path.into();
+            name.push_str("-json_path-");
+            name.push_str(json_path)
+        }
+
         flatten_options.json_stream = !file.ends_with(".json") && !file.ends_with(".json.gz");
 
         flatten_options.postgres_schema = name.clone();
@@ -4030,7 +4062,7 @@ mod tests {
             let new_name = format!("{}-{}", name, test_file);
             if test_file.ends_with(".json") {
                 let value: Value = serde_json::from_reader(
-                    File::open(format!("{}/{}", output_path.clone(), test_file)).unwrap(),
+                    File::open(format!("{}/{}", output_path.clone(), test_file)).expect(&format!("{test_file} should exist")),
                 )
                 .unwrap();
                 insta::assert_yaml_snapshot!(new_name, &value, {
@@ -4338,6 +4370,24 @@ mod tests {
     }
 
     #[test]
+    fn test_json_path() {
+        test_output(
+            "fixtures/basic.json",
+            vec![],
+            json!({"json_path": "$[?(@.title == 'B Game')]"}),
+        )
+    }
+
+    #[test]
+    fn test_json_path_condition() {
+        test_output(
+            "fixtures/basic_for_query.json",
+            vec![],
+            json!({"json_path": "$[?(@.rating.code == 'A' && @.rating.name == 'Adult')]"}),
+        )
+    }
+
+    #[test]
     fn test_http_input() {
         test_output(
             "https://gist.githubusercontent.com/kindly/820c6b5fd49374bfaff5f961d16766ae/raw/031f5e7d33e84f385df447a9991308ad679539ba/basic_http.json",
@@ -4402,7 +4452,6 @@ mod tests {
 
     #[test]
     fn test_download_upload_s3() {
-        env_logger::init();
         if std::env::var("AWS_DEFAULT_REGION").is_ok() {
             let options = Options::builder()
             .parquet(true)
