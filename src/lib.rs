@@ -17,7 +17,7 @@
 //! let options = Options::builder().xlsx(true).sqlite(true).parquet(true).table_prefix("prefix_".into()).build();
 //!
 //! flatten(
-//!    BufReader::new(File::open("fixtures/basic.json").unwrap()), // reader
+//!    Box::new(BufReader::new(File::open("fixtures/basic.json").unwrap())), // reader
 //!    output_dir.to_string_lossy().into(), // output directory
 //!    options, // options
 //! ).unwrap();
@@ -1748,7 +1748,6 @@ impl FlatFiles {
     }
 
     pub fn write_files(&mut self) -> Result<()> {
-        self.log_info("Analyzing input data");
         self.mark_ignore();
         self.determine_order();
         self.make_lower_case_titles();
@@ -1890,7 +1889,6 @@ impl FlatFiles {
 
     #[cfg(not(target_family = "wasm"))]
     pub async fn write_files_async(&mut self) -> Result<()> {
-        self.log_info("Analyzing input data");
         self.mark_ignore();
         self.determine_order();
         self.make_lower_case_titles();
@@ -3144,7 +3142,7 @@ pub fn flatten_all(
     inputs: Vec<String>,
     output: String,
     options: Options,
-) -> Result<FlatFiles> {
+) -> Result<()> {
 
     let mut final_options = options.clone();
 
@@ -3168,8 +3166,25 @@ pub fn flatten_all(
         do_analysis = false;
     } 
 
+    if !final_options.s3 && inputs.len() == 1 && !options.low_disk && options.threads != 1 {
+        let rt = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
+
+        rt.block_on( async {
+            let buf_read = get_buf_read(inputs[0].clone(), options.gzip_input).await?;
+            let output = rt.spawn_blocking(move || {
+                flatten(buf_read, output, options)
+            });
+            output.await.context(JoinSnafu)??;
+            Ok::<(), Error>(())
+        })?;
+        return Ok(())
+    }
+
     if do_analysis {
-        info!("doing analysis");
+        info!("Doing analysis first");
         if inputs.contains(&"-".to_string()) {
             return Err(Error::FlattererOptionError { message: "Can not use stdin when using `low_disk` or exporting to s3 without supplying fields.csv".into() })
         }
@@ -3200,7 +3215,9 @@ pub fn flatten_all(
     )?;
     let s3 = flat_files.options.s3;
 
-    info!("doing final run");
+    if do_analysis {
+        info!("Doing final run");
+    }
     for input in inputs {
         let flat_files_result = flatten_single(input, flat_files);
 
@@ -3222,7 +3239,7 @@ pub fn flatten_all(
 
         rt.block_on( async {
             flat_files.write_files_async().await?;
-            Ok(flat_files)
+            Ok(())
         })
     } else {
         let flat_files_result = flat_files.write_files();
@@ -3231,7 +3248,7 @@ pub fn flatten_all(
                 filename: PathBuf::from(&output).to_string_lossy(),
             })?;
         }
-        Ok(flat_files)
+        Ok(())
     }
 }
 
@@ -3306,7 +3323,6 @@ pub fn flatten_single(
     input: String,
     flat_files: FlatFiles,
 ) -> Result<FlatFiles> {
-    info!("flatten single");
     let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
 
     let (stop_sender, stop_receiver) = bounded(1);
@@ -3321,11 +3337,15 @@ pub fn flatten_single(
             .build()
             .expect("Failed to create tokio runtime");
 
-        rt.block_on( async {
+        let output = rt.block_on( async {
             let mut reciever = item_receiver;
-            item_reviever(options_clone, &mut reciever, flat_files, stop_receiver).await
-        })
-        
+            log::debug!("Starting item reviever");
+            item_reciever(options_clone, &mut reciever, flat_files, stop_receiver).await
+        });
+        if let Err(err) = output.as_ref() {
+            log::debug!("Error {} - {:?}", err, err);
+        }
+        output
     });
 
     let send_join_handler = thread::spawn(move || {
@@ -3348,7 +3368,7 @@ pub fn flatten_single(
         Ok(result) => {
             let result = result?;
             if let Err(err) = result {
-                log::debug!("Error on thread join {}", err);
+                log::debug!("Error on thread join {:?}", err);
                 return Err(err);
             }
         }
@@ -3363,17 +3383,15 @@ pub fn flatten_single(
     }
 }
 
-async fn item_reviever(options_clone: Options, item_receiver: &mut Receiver<Item>, mut flat_files: FlatFiles, stop_receiver: Receiver<()>) -> Result<FlatFiles, Error> {
+async fn item_reciever(options_clone: Options, item_receiver: &mut Receiver<Item>, mut flat_files: FlatFiles, stop_receiver: Receiver<()>) -> Result<FlatFiles, Error> {
     let smart_path = options_clone
         .path
         .iter()
         .map(SmartString::from)
         .collect_vec();
     let mut count = 0;
-    info!("in item reciever");
     for item in item_receiver.iter() {
         let serde_result = serde_json::from_str(&item.json);
-
         if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace) {
             continue;
         }
@@ -3388,6 +3406,7 @@ async fn item_reviever(options_clone: Options, item_receiver: &mut Receiver<Item
         }
 
         let value: Value = serde_result.context(SerdeReadSnafu {})?;
+
 
         if !value.is_object() {
             return Err(Error::FlattererProcessError {
@@ -3408,7 +3427,9 @@ async fn item_reviever(options_clone: Options, item_receiver: &mut Receiver<Item
         flat_files.process_value(value, initial_path);
         if flat_files.options.s3 {
             if flat_files.options.parquet {
-                flat_files.create_arrow_cols().await?
+                if count % 100 == 0 {
+                    flat_files.create_arrow_cols().await?;
+                }
             } else { 
                 match flat_files.create_rows_async().await {
                     Ok(_) => {}
@@ -3437,6 +3458,13 @@ async fn item_reviever(options_clone: Options, item_receiver: &mut Receiver<Item
             }
         }
     }
+
+    if flat_files.options.s3 {
+        if flat_files.options.parquet {
+            flat_files.create_arrow_cols().await?;
+        }
+    }
+
     if count == 0 && flat_files.options.threads != 2 {
         return Err(Error::FlattererProcessError {
             message: "The JSON provided as input is not an array of objects".to_string(),
@@ -3456,7 +3484,7 @@ async fn item_reviever(options_clone: Options, item_receiver: &mut Receiver<Item
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn flatten<R: Read + 'static>(input: BufReader<R>, output: String, mut options: Options) -> Result<()> {
+pub fn flatten(input: Box<dyn BufRead>, output: String, mut options: Options) -> Result<()> {
     if options.threads == 0 {
         options.threads = num_cpus::get()
     }
@@ -3793,7 +3821,6 @@ fn send_json_items(
             item_sender.send(item).context(ChannelItemSnafu {})?;
         }
     };
-    info!("finished sending");
     Ok(())
 }
 
@@ -3813,17 +3840,15 @@ pub fn flatten_simple<R: Read>(
     let mut outer: Vec<u8> = vec![];
     let top_level_type;
 
-    // if options.ndjson {
-    //     for line in input.lines() {
-    //         item_sender
-    //             .send(Item {
-    //                 json: line.context(FlattererReadSnafu { filepath: "input" })?,
-    //                 path: vec![],
-    //             })
-    //             .context(ChannelItemSnafu {})?;
-    //     }
-    // } else {
-    {
+    if options.ndjson {
+        for line in input.lines() {
+            let value = serde_json::from_str(&line.context(FlattererIoSnafu)?).context(SerdeReadSnafu)?;
+            flat_files.process_value(value, vec![]);
+            flat_files.create_rows()?;
+        };
+        flat_files.write_files()?;
+        return Ok(());
+    } else {
         let mut handler = yajlparser::ParseJson::new(
             &mut outer,
             None,
@@ -4615,7 +4640,7 @@ mod tests {
         let mut logger = Logger::start();
 
         flatten(
-            BufReader::new(File::open("fixtures/large_cell.json").unwrap()), // reader
+            Box::new(BufReader::new(File::open("fixtures/large_cell.json").unwrap())), // reader
             tmp_dir.path().to_string_lossy().into(),                         // output directory
             options,
         )
@@ -4632,7 +4657,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
-            BufReader::new(File::open("fixtures/large_cell.json").unwrap()), // reader
+            Box::new(BufReader::new(File::open("fixtures/large_cell.json").unwrap())), // reader
             tmp_dir.path().to_string_lossy().into(),                         // output directory
             options,
         )
@@ -4661,7 +4686,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
-            BufReader::new(File::open("fixtures/daily_16.json").unwrap()), // reader
+            Box::new(BufReader::new(File::open("fixtures/daily_16.json").unwrap())), // reader
             tmp_dir.path().to_string_lossy().into(),                       // output directory
             options,
         )
@@ -4686,12 +4711,12 @@ mod tests {
 
     #[test]
     fn test_multi_speed() {
-        let options = Options::builder().json_stream(true).force(true).build();
+        let options = Options::builder().ndjson(true).threads(0).force(true).build();
 
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
-            BufReader::new(File::open("fixtures/daily_16.json").unwrap()), // reader
+            Box::new(BufReader::new(File::open("statements_small.jsonl").unwrap())), // reader
             tmp_dir.path().to_string_lossy().into(),                       // output directory
             options,
         )
@@ -4730,7 +4755,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
-            BufReader::new(File::open("fixtures/basic.json").unwrap()),
+            Box::new(BufReader::new(File::open("fixtures/basic.json").unwrap())),
             tmp_dir.path().to_string_lossy().into(),
             options,
         )
@@ -4746,7 +4771,7 @@ mod tests {
             .build();
 
         flatten(
-            BufReader::new(File::open("fixtures/basic_evolve.json").unwrap()),
+            Box::new(BufReader::new(File::open("fixtures/basic_evolve.json").unwrap())),
             tmp_dir.path().to_string_lossy().into(),
             options,
         )
