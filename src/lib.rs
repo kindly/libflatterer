@@ -136,11 +136,17 @@ use object_store::aws::AmazonS3Builder;
 use object_store::path::Path;
 #[cfg(not(target_family = "wasm"))]
 use object_store::ObjectStore;
+#[cfg(not(target_family = "wasm"))]
 use parquet::arrow::async_writer::AsyncArrowWriter;
+#[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncWriteExt;
+#[cfg(not(target_family = "wasm"))]
 use tokio::io::{AsyncWrite, BufReader as AsycBufReader};
+#[cfg(not(target_family = "wasm"))]
 use tokio::sync::mpsc;
+#[cfg(not(target_family = "wasm"))]
 use tokio::runtime;
+#[cfg(not(target_family = "wasm"))]
 use async_compression::tokio::bufread::GzipDecoder;
 use jsonpath_rust::{JsonPathFinder, JsonPathInst};
 
@@ -274,9 +280,6 @@ pub enum Error {
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
     TokioChannelStopSendError { source: mpsc::error::SendError<()> },
-    #[cfg(not(target_family = "wasm"))]
-    #[snafu(display("{}", source))]
-    RusqliteError { source: rusqlite::Error },
     #[snafu(display(""))]
     FlattererCSVIntoInnerError {
         source: csv::IntoInnerError<Writer<flate2::write::GzEncoder<File>>>,
@@ -2580,7 +2583,7 @@ impl FlatFiles {
             true,
             Some(&csv_path.to_string_lossy()),
             false,
-        );
+        ).context(FlattererXLSXSnafu)?;
 
         for (table_name, metadata) in self.table_metadata.iter() {
             if metadata.rows > 1048576 {
@@ -4716,7 +4719,7 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
-            Box::new(BufReader::new(File::open("statements_small.jsonl").unwrap())), // reader
+            Box::new(BufReader::new(File::open("fixtures/daily_16.json").unwrap())), // reader
             tmp_dir.path().to_string_lossy().into(),                       // output directory
             options,
         )
