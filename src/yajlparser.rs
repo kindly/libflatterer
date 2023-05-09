@@ -17,7 +17,7 @@ pub struct ParseJson<W: std::io::Write> {
     top_level_writer: std::io::BufWriter<W>,
     pub error: String,
     limit: usize,
-    pub count: usize
+    pub count: usize,
 }
 
 #[derive(Debug)]
@@ -47,7 +47,7 @@ impl<W: std::io::Write> ParseJson<W> {
             top_level_writer: bufwriter,
             error: "".to_string(),
             limit,
-            count: 0
+            count: 0,
         }
     }
     fn push(&mut self, val: &str) {
@@ -76,7 +76,8 @@ impl<W: std::io::Write> ParseJson<W> {
         }
     }
     fn send(&mut self, item: Item) -> Status {
-
+        //tracing::trace!("sent {}", self.count);
+        self.count += 1;
         if let Some(sender) = self.sender.as_ref() {
             return match sender.send(item) {
                 Ok(_) => Status::Continue,
@@ -84,40 +85,39 @@ impl<W: std::io::Write> ParseJson<W> {
                     self.error = error.to_string();
                     Status::Abort
                 }
-            }
+            };
         }
 
         if let Some(flat_files) = self.flatfiles.as_mut() {
             let serde_result = serde_json::from_str(&item.json);
 
-            if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace)
-            {
-                return Status::Continue
+            if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace) {
+                return Status::Continue;
             }
 
             if serde_result.is_err() && !flat_files.options.json_stream {
                 self.error = "Error parsing JSON, try the --json-stream option.".into();
-                return Status::Abort
+                return Status::Abort;
             }
 
             let value: serde_json::Value = match serde_result {
-                Ok(value) => {value},
+                Ok(value) => value,
                 Err(error) => {
                     self.error = error.to_string();
-                    return Status::Abort
+                    return Status::Abort;
                 }
             };
 
             if !value.is_object() {
                 self.error = format!(
-                        "Value at array position {} is not an object: value is `{}`",
-                        self.count, value
-                    );
-                return Status::Abort
+                    "Value at array position {} is not an object: value is `{}`",
+                    self.count - 1, value
+                );
+                return Status::Abort;
             }
 
             if !flat_files.options.path.is_empty() && item.path != flat_files.path {
-                return Status::Continue
+                return Status::Continue;
             }
             let mut initial_path = vec![];
             if flat_files.path.is_empty() {
@@ -126,16 +126,15 @@ impl<W: std::io::Write> ParseJson<W> {
 
             flat_files.process_value(value, initial_path);
             match flat_files.create_rows() {
-                Ok(_) => {},
+                Ok(_) => {}
                 Err(error) => {
                     self.error = error.to_string();
-                    return Status::Abort
+                    return Status::Abort;
                 }
             };
-            self.count += 1;
-            return Status::Continue
+            return Status::Continue;
         }
-        return Status::Continue
+        return Status::Continue;
     }
 
     fn send_json(&mut self, _ctx: &Context) -> Status {
