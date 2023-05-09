@@ -4038,7 +4038,6 @@ mod tests {
         if let Some(json_path) = options["json_path"].as_str() {
             flatten_options.json_path_selector = json_path.into();
             name.push_str("-json_path-");
-            name.push_str(json_path)
         }
 
         flatten_options.json_stream = !file.ends_with(".json") && !file.ends_with(".json.gz");
