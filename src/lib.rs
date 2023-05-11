@@ -693,7 +693,7 @@ impl FlatFiles {
         };
 
         #[cfg(not(target_family = "wasm"))]
-        if !flat_files.options.s3 {
+        if !flat_files.options.s3 && !flat_files.options.memory {
             flat_files.create_csv_dir()?;
         }
 
@@ -1900,34 +1900,6 @@ impl FlatFiles {
         self.table_order
             .retain(|key, _| self.table_metadata.contains_key(key));
 
-        for (file, tmp_csv) in self.tmp_csvs.drain(..) {
-            match tmp_csv {
-                TmpCSVWriter::AsyncCSV(mut tmp_csv) => {
-                    tmp_csv.flush().await.context(FlattererFileWriteSnafu {
-                        filename: file.clone(),
-                    })?;
-                    let mut inner =
-                        tmp_csv
-                            .into_inner()
-                            .await
-                            .context(FlattererFileWriteSnafu {
-                                filename: file.clone(),
-                            })?;
-
-                    inner.flush().await.context(FlattererFileWriteSnafu {
-                        filename: file.clone(),
-                    })?;
-                    inner.shutdown().await.context(FlattererFileWriteSnafu {
-                        filename: file.clone(),
-                    })?;
-                }
-                TmpCSVWriter::AsyncParquet(parquet_writer) => {
-                    parquet_writer.close().await.context(ParquetSnafu {})?;
-                }
-                _ => {}
-            }
-        }
-
         self.write_data_package(false)?;
 
         self.object_store
@@ -1939,10 +1911,6 @@ impl FlatFiles {
             )
             .await
             .context(ObjectStoreSnafu {})?;
-
-        if self.options.csv {
-            self.write_csvs_async().await?;
-        };
 
         for (table_name, _) in self.table_order.iter() {
             let metadata = self.table_metadata.get(table_name).unwrap(); //key known
@@ -2292,148 +2260,6 @@ impl FlatFiles {
                     })?;
                 output_row.clear();
             }
-        }
-
-        Ok(())
-    }
-
-    pub async fn write_csvs_async(&mut self) -> Result<()> {
-        if self.direct {
-            return Ok(());
-        }
-        self.log_info("Writing final CSV files");
-
-        for (table_name, table_title) in self.table_order.iter() {
-            let metadata = self.table_metadata.get(table_name).unwrap(); //key known
-            if metadata.rows == 0 || metadata.ignore {
-                continue;
-            }
-
-            let reader_path = format!(
-                "{}/tmp/{}.csv",
-                self.output_dir.to_string_lossy(),
-                table_name
-            );
-
-            let reader = self
-                .object_store
-                .as_ref()
-                .expect("object store should exist")
-                .get(&object_store::path::Path::from(reader_path))
-                .await
-                .context(ObjectStoreSnafu {})?;
-
-            let stream = reader.into_stream();
-            let reader = tokio_util::io::StreamReader::new(stream);
-
-            let gzip_reader = AsycBufReader::new(reader);
-
-            let mut csv_reader = AsyncReaderBuilder::new()
-                .has_headers(false)
-                .flexible(true)
-                .create_reader(gzip_reader);
-
-            let filepath = format!(
-                "{}/csv/{}.csv",
-                self.output_dir.to_string_lossy(),
-                table_name
-            );
-
-            let row_count = if self.options.preview == 0 {
-                metadata.rows
-            } else {
-                std::cmp::min(self.options.preview, metadata.rows)
-            };
-            self.log_info(&format!(
-                "    Writing {} row(s) to {}.csv",
-                row_count, table_title
-            ));
-            if TERMINATE.load(Ordering::SeqCst) {
-                return Err(Error::Terminated {});
-            };
-
-            let path = Path::from(filepath.clone());
-
-            let (_id, writer) = self
-                .object_store
-                .as_ref()
-                .expect("object store should exist")
-                .put_multipart(&path)
-                .await
-                .context(ObjectStoreSnafu {})?;
-            let mut csv_writer = AsyncWriterBuilder::new().create_writer(writer);
-
-            let mut non_ignored_fields = vec![];
-
-            let table_order = metadata.order.clone();
-
-            for order in table_order {
-                if !metadata.ignore_fields[order] {
-                    let field = metadata.field_titles[order].clone();
-                    let clean_field = INVALID_REGEX.replace_all(&field, " ");
-                    non_ignored_fields.push(clean_field.to_string())
-                }
-            }
-
-            csv_writer.write_record(&non_ignored_fields).await.context(
-                FlattererCSVAsyncWriteSnafu {
-                    filepath: filepath.clone(),
-                },
-            )?;
-
-            let mut output_row = csv_async::ByteRecord::new();
-
-            let mut stream = csv_reader.byte_records();
-
-            use futures::stream::StreamExt;
-
-            let mut num = 0;
-
-            while let Some(row) = stream.next().await {
-                if self.options.preview != 0 && num == self.options.preview {
-                    break;
-                }
-                let this_row = row.context(FlattererCSVAsyncWriteSnafu {
-                    filepath: &filepath,
-                })?;
-
-                let table_order = metadata.order.clone();
-
-                for order in table_order {
-                    if metadata.ignore_fields[order] {
-                        continue;
-                    }
-                    if order >= this_row.len() {
-                        output_row.push_field(b"");
-                    } else {
-                        output_row.push_field(&this_row[order]);
-                    }
-                }
-                num += 1;
-
-                csv_writer.write_byte_record(&output_row).await.context(
-                    FlattererCSVAsyncWriteSnafu {
-                        filepath: &filepath,
-                    },
-                )?;
-                output_row.clear();
-            }
-
-            csv_writer.flush().await.context(FlattererFileWriteSnafu {
-                filename: table_name,
-            })?;
-            let mut inner = csv_writer
-                .into_inner()
-                .await
-                .context(FlattererFileWriteSnafu {
-                    filename: table_name,
-                })?;
-            inner.flush().await.context(FlattererFileWriteSnafu {
-                filename: table_name,
-            })?;
-            inner.shutdown().await.context(FlattererFileWriteSnafu {
-                filename: table_name,
-            })?;
         }
 
         Ok(())
@@ -3159,6 +2985,9 @@ pub fn flatten_all(
         if options.xlsx || options.sqlite || !options.postgres_connection.is_empty() {
             return Err(Error::FlattererOptionError { message: "When writing to s3 can only choose CSV or Parquet outputs".into() })
         }
+        if inputs.len() > 1 {
+            return Err(Error::FlattererOptionError { message: "When writing to s3 can only have one input".into() })
+        }
     }
 
     if options.low_disk {
@@ -3465,6 +3294,34 @@ async fn item_reciever(options_clone: Options, item_receiver: &mut Receiver<Item
     if flat_files.options.s3 {
         if flat_files.options.parquet {
             flat_files.create_arrow_cols().await?;
+        }
+    }
+
+    for (file, tmp_csv) in flat_files.tmp_csvs.drain(..) {
+        match tmp_csv {
+            TmpCSVWriter::AsyncCSV(mut tmp_csv) => {
+                tmp_csv.flush().await.context(FlattererFileWriteSnafu {
+                    filename: file.clone(),
+                })?;
+                let mut inner =
+                    tmp_csv
+                        .into_inner()
+                        .await
+                        .context(FlattererFileWriteSnafu {
+                            filename: file.clone(),
+                        })?;
+
+                inner.flush().await.context(FlattererFileWriteSnafu {
+                    filename: file.clone(),
+                })?;
+                inner.shutdown().await.context(FlattererFileWriteSnafu {
+                    filename: file.clone(),
+                })?;
+            },
+            TmpCSVWriter::AsyncParquet(parquet_writer) => {
+                parquet_writer.close().await.context(ParquetSnafu {})?;
+            },
+            _ => {}
         }
     }
 
@@ -4459,7 +4316,7 @@ mod tests {
 
             flatten_all(
                 vec!["fixtures/daily_16.json".into()], // reader
-                "s3://flatterer-test/6".into(),                       // output directory
+                "s3://flatterer-test/7".into(),                       // output directory
                 options,
             )
             .unwrap();
@@ -4470,7 +4327,7 @@ mod tests {
 
             flatten_all(
                 vec!["fixtures/daily_16.json".into()], // reader
-                "s3://flatterer-test/6".into(),                       // output directory
+                "s3://flatterer-test/7".into(),                       // output directory
                 options,
             )
             .unwrap();
