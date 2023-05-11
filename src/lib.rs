@@ -129,7 +129,7 @@ use yajlish::Parser;
 #[cfg(not(target_family = "wasm"))]
 use yajlparser::Item;
 
-use csv_async::{AsyncReaderBuilder, AsyncWriter, AsyncWriterBuilder};
+use csv_async::{AsyncWriter, AsyncWriterBuilder};
 #[cfg(not(target_family = "wasm"))]
 use object_store::aws::AmazonS3Builder;
 #[cfg(not(target_family = "wasm"))]
@@ -141,7 +141,7 @@ use parquet::arrow::async_writer::AsyncArrowWriter;
 #[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncWriteExt;
 #[cfg(not(target_family = "wasm"))]
-use tokio::io::{AsyncWrite, BufReader as AsycBufReader};
+use tokio::io::AsyncWrite;
 #[cfg(not(target_family = "wasm"))]
 use tokio::sync::mpsc;
 #[cfg(not(target_family = "wasm"))]
@@ -471,6 +471,7 @@ pub struct FlatFiles {
     direct: bool,
     object_store: Option<Box<dyn ObjectStore>>,
     json_path: Option<JsonPathFinder>,
+    pub rt: Option<tokio::runtime::Runtime>,
 }
 
 #[derive(Serialize, Debug)]
@@ -589,6 +590,12 @@ impl FlatFiles {
         Self::new(output_dir, options)
     }
 
+    pub fn new_with_runtime(output_dir: String, options: Options, rt: tokio::runtime::Runtime) -> Result<Self> {
+        let mut flatfiles = Self::new(output_dir, options)?;
+        flatfiles.rt = Some(rt);
+        Ok(flatfiles)
+    }
+
     pub fn new(output_dir: String, mut options: Options) -> Result<Self> {
         #[cfg(target_family = "wasm")]
         {
@@ -689,7 +696,8 @@ impl FlatFiles {
             files_memory: HashMap::new(),
             direct,
             object_store,
-            json_path
+            json_path,
+            rt: None,
         };
 
         #[cfg(not(target_family = "wasm"))]
@@ -1896,6 +1904,34 @@ impl FlatFiles {
         self.determine_order();
         self.make_lower_case_titles();
 
+        for (file, tmp_csv) in self.tmp_csvs.drain(..) {
+            match tmp_csv {
+                TmpCSVWriter::AsyncCSV(mut tmp_csv) => {
+                    tmp_csv.flush().await.context(FlattererFileWriteSnafu {
+                        filename: file.clone(),
+                    })?;
+                    let mut inner =
+                        tmp_csv
+                            .into_inner()
+                            .await
+                            .context(FlattererFileWriteSnafu {
+                                filename: file.clone(),
+                            })?;
+
+                    inner.flush().await.context(FlattererFileWriteSnafu {
+                        filename: file.clone(),
+                    })?;
+                    inner.shutdown().await.context(FlattererFileWriteSnafu {
+                        filename: file.clone(),
+                    })?;
+                },
+                TmpCSVWriter::AsyncParquet(parquet_writer) => {
+                    parquet_writer.close().await.context(ParquetSnafu {})?;
+                },
+                _ => {}
+            }
+        }
+
         //remove tables that should not be there from table order.
         self.table_order
             .retain(|key, _| self.table_metadata.contains_key(key));
@@ -2985,9 +3021,6 @@ pub fn flatten_all(
         if options.xlsx || options.sqlite || !options.postgres_connection.is_empty() {
             return Err(Error::FlattererOptionError { message: "When writing to s3 can only choose CSV or Parquet outputs".into() })
         }
-        if inputs.len() > 1 {
-            return Err(Error::FlattererOptionError { message: "When writing to s3 can only have one input".into() })
-        }
     }
 
     if options.low_disk {
@@ -3028,7 +3061,12 @@ pub fn flatten_all(
         analysis_options.s3 = false;
         analysis_options.postgres_connection = "".into();
 
-        let mut analysis_flat_files = FlatFiles::new("".into(), analysis_options.clone())?;
+        let rt = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime");
+
+        let mut analysis_flat_files = FlatFiles::new_with_runtime("".into(), analysis_options.clone(), rt)?;
 
         for input in inputs.iter() {
             analysis_flat_files = flatten_single(input.into(), analysis_flat_files)?
@@ -3040,11 +3078,17 @@ pub fn flatten_all(
         final_options.only_fields = true;
     }
 
+    let rt = runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("Failed to create tokio runtime");
 
-    let mut flat_files = FlatFiles::new(
+    let mut flat_files = FlatFiles::new_with_runtime(
         output.clone(),
         final_options.clone(),
+        rt
     )?;
+
     let s3 = flat_files.options.s3;
 
     if do_analysis {
@@ -3064,10 +3108,7 @@ pub fn flatten_all(
     }
 
     if output.starts_with("s3://") {
-        let rt = runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime");
+        let rt = flat_files.rt.take().expect("should exist");
 
         rt.block_on( async {
             flat_files.write_files_async().await?;
@@ -3153,7 +3194,7 @@ async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Sen
 #[cfg(not(target_family = "wasm"))]
 pub fn flatten_single(
     input: String,
-    flat_files: FlatFiles,
+    mut flat_files: FlatFiles,
 ) -> Result<FlatFiles> {
     let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
 
@@ -3163,17 +3204,17 @@ pub fn flatten_single(
     let options_clone = flat_files.options.clone();
 
     let join_handler = thread::spawn(move || { 
+        let rt = flat_files.rt.take().expect("Failed to get tokio runtime");
 
-        let rt = runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime");
-
-        let output = rt.block_on( async {
+        let mut output = rt.block_on( async {
             let mut reciever = item_receiver;
             log::debug!("Starting item reviever");
             item_reciever(options_clone, &mut reciever, flat_files, stop_receiver).await
         });
+
+        if let Ok(flatfiles) = output.as_mut() {
+            flatfiles.rt = Some(rt);
+        }
         if let Err(err) = output.as_ref() {
             log::debug!("Error {} - {:?}", err, err);
         }
@@ -3297,33 +3338,6 @@ async fn item_reciever(options_clone: Options, item_receiver: &mut Receiver<Item
         }
     }
 
-    for (file, tmp_csv) in flat_files.tmp_csvs.drain(..) {
-        match tmp_csv {
-            TmpCSVWriter::AsyncCSV(mut tmp_csv) => {
-                tmp_csv.flush().await.context(FlattererFileWriteSnafu {
-                    filename: file.clone(),
-                })?;
-                let mut inner =
-                    tmp_csv
-                        .into_inner()
-                        .await
-                        .context(FlattererFileWriteSnafu {
-                            filename: file.clone(),
-                        })?;
-
-                inner.flush().await.context(FlattererFileWriteSnafu {
-                    filename: file.clone(),
-                })?;
-                inner.shutdown().await.context(FlattererFileWriteSnafu {
-                    filename: file.clone(),
-                })?;
-            },
-            TmpCSVWriter::AsyncParquet(parquet_writer) => {
-                parquet_writer.close().await.context(ParquetSnafu {})?;
-            },
-            _ => {}
-        }
-    }
 
     if count == 0 && flat_files.options.threads != 2 {
         return Err(Error::FlattererProcessError {
@@ -4315,8 +4329,8 @@ mod tests {
             .build();
 
             flatten_all(
-                vec!["fixtures/daily_16.json".into()], // reader
-                "s3://flatterer-test/7".into(),                       // output directory
+                vec!["fixtures/daily_16.json".into(), "fixtures/daily_16.json".into()], // reader
+                "s3://flatterer-test/9".into(),                       // output directory
                 options,
             )
             .unwrap();
@@ -4326,8 +4340,8 @@ mod tests {
             .build();
 
             flatten_all(
-                vec!["fixtures/daily_16.json".into()], // reader
-                "s3://flatterer-test/7".into(),                       // output directory
+                vec!["fixtures/daily_16.json".into(), "fixtures/daily_16.json".into()], // reader
+                "s3://flatterer-test/9".into(),                       // output directory
                 options,
             )
             .unwrap();
