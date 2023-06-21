@@ -3120,6 +3120,7 @@ pub fn flatten_all(
             remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
                 filename: PathBuf::from(&output).to_string_lossy(),
             })?;
+            return flat_files_result;
         }
         Ok(())
     }
