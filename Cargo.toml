@@ -39,7 +39,7 @@ jsonpath-rust = "0.3.0"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 jsonref= "0.4"
-object_store = { version = "0.5.6", features = ["aws", "http"]}
+object_store = { version = "0.6.1", features = ["aws", "http"]}
 #object_store = { git = "https://github.com/apache/arrow-rs.git", features = ["aws", "http"]}
 
 crossbeam-channel="0.5"
