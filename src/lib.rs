@@ -446,6 +446,8 @@ pub struct Options {
     pub gzip_input: bool,
     #[builder(default)]
     pub json_path_selector: String,
+    #[builder(default)]
+    pub arrays_new_table: bool,
 }
 
 pub struct FlatFiles {
@@ -821,7 +823,7 @@ impl FlatFiles {
                 }
                 if arr_length == 0 {
                     to_delete.push(key.clone());
-                } else if str_count == arr_length {
+                } else if str_count == arr_length && !self.options.arrays_new_table {
                     let keys: Vec<String> = arr
                         .iter()
                         .map(|val| (val.as_str().unwrap().to_string())) //value known as str
@@ -835,7 +837,7 @@ impl FlatFiles {
                     let trimmed = values.trim();
                     let trimmed_value = json!(trimmed);
                     to_insert.push((key.clone(), trimmed_value))
-                } else if obj_count == arr_length {
+                } else if obj_count == arr_length || self.options.arrays_new_table {
                     to_delete.push(key.clone());
                     let mut removed_array = value.take(); // obj.remove(&key).unwrap(); //key known
                     let my_array = removed_array.as_array_mut().unwrap(); //key known as array
@@ -868,8 +870,12 @@ impl FlatFiles {
                             }
                         }
 
+                        if parent_one_to_one_key {
+                            continue;
+                        }
+
                         if let Value::Object(my_obj) = my_value {
-                            if !parent_one_to_one_key && !my_obj.is_empty() {
+                            if !my_obj.is_empty() {
                                 self.handle_obj(
                                     my_obj,
                                     true,
@@ -882,6 +888,35 @@ impl FlatFiles {
                                     new_pushdown_values.clone(),
                                 );
                             }
+                            continue;
+                        }
+
+                        if self.options.arrays_new_table {
+                            let value_value = match my_value {
+                                Value::String(s) => {
+                                    s
+                                }
+                                _ => {
+                                    format!("{}", my_value)
+                                }
+                            };
+                            let json_value = json!(
+                                value_value
+                            );
+                            let mut my_obj = Map::new();
+                            my_obj.insert("value".to_string(), json_value);
+                            self.handle_obj(
+                                my_obj,
+                                true,
+                                new_full_path,
+                                new_no_index_path,
+                                new_one_to_many_full_paths,
+                                new_one_to_many_no_index_paths,
+                                false,
+                                new_pushdown_keys.clone(),
+                                new_pushdown_values.clone(),
+                            );
+
                         }
                     }
                 } else {
@@ -3897,6 +3932,11 @@ mod tests {
             name.push_str("-low_disk")
         }
 
+        if let Some(arrays_new_table) = options["arrays_new_table"].as_bool() {
+            flatten_options.arrays_new_table = arrays_new_table;
+            name.push_str("-arrow_new_table")
+        }
+
         if let Some(path_values) = options["path"].as_array() {
             let path = path_values
                 .iter()
@@ -3911,6 +3951,7 @@ mod tests {
             flatten_options.json_path_selector = json_path.into();
             name.push_str("-json_path-");
         }
+
 
         flatten_options.json_stream = !file.ends_with(".json") && !file.ends_with(".json.gz");
 
@@ -3976,6 +4017,15 @@ mod tests {
                 insta::assert_yaml_snapshot!(new_name, output);
             }
         }
+    }
+
+    #[test]
+    fn string_list() {
+        test_output(
+            &format!("fixtures/basic_list.json"),
+            vec!["csv/main.csv", "csv/rating.csv", "csv/moo_names.csv"],
+            json!({"arrays_new_table":true}),
+        )
     }
 
     #[test]
