@@ -1,0 +1,351 @@
+---
+source: src/lib.rs
+expression: "&value"
+---
+profile: tabular-data-package
+resources:
+  - profile: tabular-data-resource
+    name: main
+    flatterer_name: main
+    title: main
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          format: string
+          count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "1"
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 1
+              - - "1"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: id
+          title: id
+          type: number
+          format: number
+          count: 2
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "2"
+            max_str: "2"
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "2"
+                - 1
+            sum: 3
+            mean: 1.5
+            variance: 0.25
+            stddev: 0.5
+            min_number: 1
+            max_number: 2
+            median: 1.5
+            lower_quartile: 1
+            upper_quartile: 2
+            deciles: 0
+            centiles: 0
+        - name: title
+          title: title
+          type: string
+          format: string
+          count: 2
+          stats:
+            min_len: 6
+            max_len: 6
+            min_str: A Game
+            max_str: A Game
+            count: 2
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - A Game
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: releaseDate
+          title: releaseDate
+          type: date
+          format: "%Y-%m-%d"
+          count: 2
+          stats:
+            min_len: 10
+            max_len: 10
+            min_str: 2015-01-01
+            max_str: 2016-01-01
+            count: 2
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - 2015-01-01
+                - 1
+              - - 2016-01-01
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+      primaryKey: _link
+    path: csv/main.csv
+  - profile: tabular-data-resource
+    name: rating
+    flatterer_name: rating
+    title: rating
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          format: string
+          count: 4
+          stats:
+            min_len: 10
+            max_len: 10
+            min_str: 0.rating.0
+            max_str: 1.rating.1
+            count: 4
+            empty_count: 0
+            exact_unique: 4
+            estimate_unique: ~
+            top_20:
+              - - 0.rating.0
+                - 1
+              - - 0.rating.1
+                - 1
+              - - 1.rating.0
+                - 1
+              - - 1.rating.1
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: _link_main
+          title: _link_main
+          type: string
+          format: string
+          count: 4
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "1"
+            count: 4
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 2
+              - - "1"
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: value
+          title: value
+          type: string
+          format: string
+          count: 4
+          stats:
+            min_len: 1
+            max_len: 8
+            min_str: "10"
+            max_str: F
+            count: 4
+            empty_count: 0
+            exact_unique: 3
+            estimate_unique: ~
+            top_20:
+              - - Everyone
+                - 2
+              - - "10"
+                - 1
+              - - F
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_main
+          reference:
+            resource: main
+            fields: _link
+    path: csv/rating.csv
+  - profile: tabular-data-resource
+    name: moo_names
+    flatterer_name: moo_names
+    title: moo_names
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          format: string
+          count: 4
+          stats:
+            min_len: 13
+            max_len: 13
+            min_str: 0.moo.names.0
+            max_str: 1.moo.names.1
+            count: 4
+            empty_count: 0
+            exact_unique: 4
+            estimate_unique: ~
+            top_20:
+              - - 0.moo.names.0
+                - 1
+              - - 0.moo.names.1
+                - 1
+              - - 1.moo.names.0
+                - 1
+              - - 1.moo.names.1
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: _link_main
+          title: _link_main
+          type: string
+          format: string
+          count: 4
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "1"
+            count: 4
+            empty_count: 0
+            exact_unique: 2
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 2
+              - - "1"
+                - 2
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: value
+          title: value
+          type: string
+          format: string
+          count: 4
+          stats:
+            min_len: 3
+            max_len: 3
+            min_str: Cow
+            max_str: soo
+            count: 4
+            empty_count: 0
+            exact_unique: 4
+            estimate_unique: ~
+            top_20:
+              - - Cow
+                - 1
+              - - Moo
+                - 1
+              - - doo
+                - 1
+              - - soo
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+      primaryKey: _link
+      foreignKeys:
+        - fields: _link_main
+          reference:
+            resource: main
+            fields: _link
+    path: csv/moo_names.csv
+

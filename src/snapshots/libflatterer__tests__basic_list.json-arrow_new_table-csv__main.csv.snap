@@ -1,0 +1,8 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "_link,id,title,releaseDate"
+- "0,1,A Game,2015-01-01"
+- "1,2,A Game,2016-01-01"
+

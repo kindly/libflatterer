@@ -1,0 +1,26 @@
+[
+  {
+    "id": 1,
+    "rating": [
+      10,
+      "Everyone"
+    ],
+    "moo": {
+      "names": ["Moo", "Cow"]
+    },
+    "releaseDate": "2015-01-01",
+    "title": "A Game"
+  },
+  {
+    "id": 2,
+    "rating": [
+      "F",
+      "Everyone"
+    ],
+    "moo": {
+      "names": ["doo", "soo"]
+    },
+    "releaseDate": "2016-01-01",
+    "title": "A Game"
+  }
+]

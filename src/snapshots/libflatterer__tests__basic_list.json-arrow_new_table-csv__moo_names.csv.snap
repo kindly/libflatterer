@@ -1,0 +1,10 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "_link,_link_main,value"
+- "0.moo.names.0,0,Moo"
+- "0.moo.names.1,0,Cow"
+- "1.moo.names.0,1,doo"
+- "1.moo.names.1,1,soo"
+
