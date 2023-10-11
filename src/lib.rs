@@ -3512,7 +3512,7 @@ pub fn flatten(input: Box<dyn BufRead>, output: String, mut options: Options) ->
                 }
             }
 
-            if count == 0 && options.threads != 2 {
+            if count == 0 && options.threads == 1 && !options.ndjson && !options.json_stream {
                 return Err(Error::FlattererProcessError {
                     message: "The JSON provided as input is not an array of objects".to_string(),
                 });
@@ -4592,6 +4592,30 @@ mod tests {
             all_logs.push(log.args().to_string())
         }
         assert!(all_logs.contains(&"WARNING: Cell larger than 32767 chararcters which is too large for XLSX format. The cell will be truncated, so some data will be missing.".to_string()))
+    }
+
+    #[test]
+    fn test_multi_small() {
+        let options = Options::builder()
+            .threads(4)
+            .force(true)
+            .build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        flatten(
+            Box::new(BufReader::new(File::open("fixtures/basic.json").unwrap())), // reader
+            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            options,
+        )
+        .unwrap();
+
+        let value: Value =
+            serde_json::from_reader(File::open(tmp_dir.path().join("datapackage.json")).unwrap())
+                .unwrap();
+
+        insta::assert_yaml_snapshot!(&value);
+
     }
 
     #[test]
