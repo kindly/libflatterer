@@ -443,6 +443,8 @@ pub struct Options {
     #[builder(default)]
     pub low_disk: bool,
     #[builder(default)]
+    pub low_memory: bool,
+    #[builder(default)]
     pub gzip_input: bool,
     #[builder(default)]
     pub json_path_selector: String,
@@ -3232,7 +3234,12 @@ pub fn flatten_single(
     input: String,
     mut flat_files: FlatFiles,
 ) -> Result<FlatFiles> {
-    let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(1000);
+    let channel_size = if flat_files.options.low_memory {
+        flat_files.options.threads + 10
+    } else {
+        1000
+    };
+    let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(channel_size);
 
     let (stop_sender, stop_receiver) = bounded(1);
 
@@ -3426,8 +3433,10 @@ pub fn flatten(input: Box<dyn BufRead>, output: String, mut options: Options) ->
     let mut output_paths = vec![];
     let mut join_handlers = vec![];
 
+    let channel_size = if options.low_memory {options.threads + 10 } else { 1000 };
+
     let (item_sender, item_receiver_initial): (Sender<Item>, Receiver<yajlparser::Item>) =
-        bounded(1000);
+        bounded(channel_size);
 
     let mut stop_senders = vec![];
 
@@ -3932,6 +3941,11 @@ mod tests {
             name.push_str("-low_disk")
         }
 
+        if let Some(low_memory) = options["low_memory"].as_bool() {
+            flatten_options.low_memory = low_memory;
+            name.push_str("-low_memory")
+        }
+
         if let Some(arrays_new_table) = options["arrays_new_table"].as_bool() {
             flatten_options.arrays_new_table = arrays_new_table;
             name.push_str("-arrow_new_table")
@@ -4315,6 +4329,15 @@ mod tests {
             "fixtures/basic.json",
             vec![],
             json!({"low_disk": true}),
+        )
+    }
+
+    #[test]
+    fn test_low_memory() {
+        test_output(
+            "fixtures/basic.json",
+            vec![],
+            json!({"low_memory": true}),
         )
     }
 

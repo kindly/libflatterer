@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.19.9"
+version = "0.19.10"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -14,7 +14,7 @@ homepage = "https://github.com/kindly/libflatterer"
 yajlish = { version = "0.4.0" }
 #yajlish = { path = "../yajlish" }
 serde_json = { version = "1", features = ["preserve_order"] }
-itertools = "0.10"
+itertools = "0.12.0"
 csv = "1"
 serde = {version = "1", features = ["derive"] }
 smallvec="1.6.1"
@@ -22,10 +22,10 @@ regex="1"
 slug="0.1"
 smartstring={version = "1.0.0", features = ["serde"] }
 snafu = {version = "0.7.0"}
-indexmap = {version = "1", features = ["serde"] }
+indexmap = {version = "2.1.0", features = ["serde"] }
 log = "0.4"
 lazy_static = "1"
-typed-builder = "0.10.0"
+typed-builder = "0.18.0"
 num_cpus = "1.13.1"
 flate2 = "1.0.24"
 csvs_convert = "0.8.8"
@@ -39,7 +39,7 @@ jsonpath-rust = "0.3.0"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 jsonref= "0.4"
-object_store = { version = "0.6.1", features = ["aws", "http"]}
+object_store = { version = "0.8.0", features = ["aws", "http"]}
 #object_store = { git = "https://github.com/apache/arrow-rs.git", features = ["aws", "http"]}
 
 crossbeam-channel="0.5"
@@ -49,12 +49,12 @@ nanoid = "0.4.0"
 tokio = { version = "1.27.0", features = ["rt"] }
 csv-async = { version = "1.2.6", features = ["tokio"] }
 futures-util = { version = "0.3.27" }
-parquet = {version = "38.0.0", features = ["async"] }
+parquet = {version = "49.0.0", features = ["async"] }
 tokio-util = { version = "0.7.7", features = ["io", "io-util"] }
 futures = {version = "0.3.28"}
-arrow-array = "38.0.0"
-arrow-schema = "38.0.0"
-async-compression = { version = "0.3.15", features = ["gzip", "tokio"] }
+arrow-array = "49.0.0"
+arrow-schema = "49.0.0"
+async-compression = { version = "0.4.5", features = ["gzip", "tokio"] }
 env_logger = "0.10.0"
 
 [dev-dependencies]
