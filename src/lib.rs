@@ -2587,7 +2587,11 @@ impl FlatFiles {
 
                     if cell.len() > 32767 {
                         log::warn!("WARNING: Cell larger than 32767 chararcters which is too large for XLSX format. The cell will be truncated, so some data will be missing.");
-                        cell.truncate(32767)
+                        let mut index: usize = 32767;
+                        while !cell.is_char_boundary(index) {
+                            index -= 1;
+                        }
+                        cell.truncate(index)
                     }
 
                     if metadata.describers[order].guess_type().0 == "number" {
