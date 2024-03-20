@@ -102,10 +102,13 @@ use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 
 #[cfg(not(target_family = "wasm"))]
 use csvs_convert::{
-    datapackage_to_parquet_with_options, datapackage_to_postgres_with_options,
-    datapackage_to_sqlite_with_options, datapackage_to_xlsx_with_options,
-    merge_datapackage_with_options,
+    datapackage_to_postgres_with_options, datapackage_to_sqlite_with_options, 
+    datapackage_to_xlsx_with_options, merge_datapackage_with_options,
 };
+
+#[cfg(not(target_family = "wasm"))]
+#[cfg(feature = "parquet")]
+use csvs_convert::datapackage_to_parquet_with_options;
 
 use csvs_convert::{Describer, DescriberOptions};
 
@@ -129,7 +132,10 @@ use yajlish::Parser;
 #[cfg(not(target_family = "wasm"))]
 use yajlparser::Item;
 
+#[cfg(not(target_family = "wasm"))]
+use async_compression::tokio::bufread::GzipDecoder;
 use csv_async::{AsyncWriter, AsyncWriterBuilder};
+use jsonpath_rust::{JsonPathFinder, JsonPathInst};
 #[cfg(not(target_family = "wasm"))]
 use object_store::aws::AmazonS3Builder;
 #[cfg(not(target_family = "wasm"))]
@@ -139,17 +145,13 @@ use object_store::ObjectStore;
 #[cfg(not(target_family = "wasm"))]
 use parquet::arrow::async_writer::AsyncArrowWriter;
 #[cfg(not(target_family = "wasm"))]
-use tokio::io::AsyncWriteExt;
-#[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncWrite;
 #[cfg(not(target_family = "wasm"))]
-use tokio::sync::mpsc;
+use tokio::io::AsyncWriteExt;
 #[cfg(not(target_family = "wasm"))]
 use tokio::runtime;
 #[cfg(not(target_family = "wasm"))]
-use async_compression::tokio::bufread::GzipDecoder;
-use jsonpath_rust::{JsonPathFinder, JsonPathInst};
-
+use tokio::sync::mpsc;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -264,13 +266,17 @@ pub enum Error {
     ChannelSendError { source: SendError<Value> },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
-    TokioChannelSendError { source: tokio::sync::mpsc::error::SendError<Value> },
+    TokioChannelSendError {
+        source: tokio::sync::mpsc::error::SendError<Value>,
+    },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
     ChannelItemError { source: SendError<Item> },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
-    TokioChannelItemError { source: tokio::sync::mpsc::error::SendError<Item> },
+    TokioChannelItemError {
+        source: tokio::sync::mpsc::error::SendError<Item>,
+    },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display(""))]
     ChannelBufSendError { source: SendError<(Vec<u8>, bool)> },
@@ -594,7 +600,11 @@ impl FlatFiles {
         Self::new(output_dir, options)
     }
 
-    pub fn new_with_runtime(output_dir: String, options: Options, rt: tokio::runtime::Runtime) -> Result<Self> {
+    pub fn new_with_runtime(
+        output_dir: String,
+        options: Options,
+        rt: tokio::runtime::Runtime,
+    ) -> Result<Self> {
         let mut flatfiles = Self::new(output_dir, options)?;
         flatfiles.rt = Some(rt);
         Ok(flatfiles)
@@ -652,12 +662,11 @@ impl FlatFiles {
                 })
                 .with_url(&output_dir)
                 .with_client_options(
-                     object_store::ClientOptions::new()
-                     .with_http1_only()
-                     .with_pool_max_idle_per_host(0)
-                //       .with_connect_timeout(std::time::Duration::from_secs(10))
-                //        .with_timeout(std::time::Duration::from_secs(10))
-                 )
+                    object_store::ClientOptions::new()
+                        .with_http1_only()
+                        .with_pool_max_idle_per_host(0), //       .with_connect_timeout(std::time::Duration::from_secs(10))
+                                                         //        .with_timeout(std::time::Duration::from_secs(10))
+                )
                 .build()
                 .context(ObjectStoreSnafu {})?;
             Some(Box::new(s3))
@@ -676,7 +685,7 @@ impl FlatFiles {
         } else {
             let jsonpath = JsonPathInst::from_str(&options.json_path_selector).unwrap();
             Some(JsonPathFinder::new(Box::new(json!({})), Box::new(jsonpath)))
-        }; 
+        };
 
         let mut flat_files = Self {
             output_dir: new_output_dir.into(),
@@ -895,16 +904,12 @@ impl FlatFiles {
 
                         if self.options.arrays_new_table {
                             let value_value = match my_value {
-                                Value::String(s) => {
-                                    s
-                                }
+                                Value::String(s) => s,
                                 _ => {
                                     format!("{}", my_value)
                                 }
                             };
-                            let json_value = json!(
-                                value_value
-                            );
+                            let json_value = json!(value_value);
                             let mut my_obj = Map::new();
                             my_obj.insert("value".to_string(), json_value);
                             self.handle_obj(
@@ -918,7 +923,6 @@ impl FlatFiles {
                                 new_pushdown_keys.clone(),
                                 new_pushdown_values.clone(),
                             );
-
                         }
                     }
                 } else {
@@ -1157,7 +1161,10 @@ impl FlatFiles {
                             writer
                                 .write_record(
                                     self.table_metadata.get(table).unwrap().field_titles.clone(),
-                                ).context(FlattererCSVWriteSnafu {filepath: &output_path})?
+                                )
+                                .context(FlattererCSVWriteSnafu {
+                                    filepath: &output_path,
+                                })?
                         }
                         #[cfg(not(target_family = "wasm"))]
                         self.tmp_csvs
@@ -1275,16 +1282,16 @@ impl FlatFiles {
                             match value {
                                 Value::Null => b.push(None),
                                 Value::Bool(bool) => b.push(Some(*bool)),
-                                Value::String(str) => {
-                                    match str.parse::<bool>() {
-                                        Ok(bool) => b.push(Some(bool)),
-                                        Err(_) => return Err(Error::FlattererProcessError {
+                                Value::String(str) => match str.parse::<bool>() {
+                                    Ok(bool) => b.push(Some(bool)),
+                                    Err(_) => {
+                                        return Err(Error::FlattererProcessError {
                                             message: format!(
                                                 "Unable to parse {str} as bool in field {field}"
                                             ),
-                                        }),
+                                        })
                                     }
-                                }
+                                },
                                 _ => {
                                     return Err(Error::FlattererProcessError {
                                         message: format!(
@@ -1309,16 +1316,16 @@ impl FlatFiles {
                                         ),
                                     },
                                 )?)),
-                                Value::String(str) => {
-                                    match str.parse::<i64>() {
-                                        Ok(parsed) => integer.push(Some(parsed)),
-                                        Err(_) => return Err(Error::FlattererProcessError {
+                                Value::String(str) => match str.parse::<i64>() {
+                                    Ok(parsed) => integer.push(Some(parsed)),
+                                    Err(_) => {
+                                        return Err(Error::FlattererProcessError {
                                             message: format!(
                                                 "Unable to parse {str} as integer in field {field}"
                                             ),
-                                        }),
+                                        })
                                     }
-                                }
+                                },
                                 _ => {
                                     return Err(Error::FlattererProcessError {
                                         message: format!(
@@ -1356,11 +1363,13 @@ impl FlatFiles {
                                         ),
                                     },
                                 )?)),
-                                _ => return Err(Error::FlattererProcessError {
+                                _ => {
+                                    return Err(Error::FlattererProcessError {
                                         message: format!(
                                             "Unable to parse {value} as number in field {field}"
                                         ),
                                     })
+                                }
                             }
                         }
                     }
@@ -1375,26 +1384,29 @@ impl FlatFiles {
                 let field_name = &table_metadata.field_titles[index];
                 match array_builder {
                     ArrayBuilders::String(b) => {
-                        let array = Arc::new(arrow_array::array::LargeStringArray::from_iter(b.drain(..)));
+                        let array =
+                            Arc::new(arrow_array::array::LargeStringArray::from_iter(b.drain(..)));
                         arrow_arrays.push((field_name, array, true))
                     }
                     ArrayBuilders::Boolean(b) => {
-                        let array = Arc::new(arrow_array::array::BooleanArray::from_iter(b.drain(..)));
+                        let array =
+                            Arc::new(arrow_array::array::BooleanArray::from_iter(b.drain(..)));
                         arrow_arrays.push((field_name, array, true))
                     }
                     ArrayBuilders::Integer(b) => {
-                        let array = Arc::new(arrow_array::array::Int64Array::from_iter(b.drain(..)));
+                        let array =
+                            Arc::new(arrow_array::array::Int64Array::from_iter(b.drain(..)));
                         arrow_arrays.push((field_name, array, true))
                     }
                     ArrayBuilders::Number(b) => {
-                        let array = Arc::new(arrow_array::array::Float64Array::from_iter(b.drain(..)));
+                        let array =
+                            Arc::new(arrow_array::array::Float64Array::from_iter(b.drain(..)));
                         arrow_arrays.push((field_name, array, true))
                     }
                 }
             }
             let record_batch = arrow_array::RecordBatch::try_from_iter_with_nullable(arrow_arrays)
                 .expect("should be well formed arrays");
-
 
             if !self.tmp_csvs.contains_key(table) {
                 let file_path = format!(
@@ -1418,7 +1430,8 @@ impl FlatFiles {
                     .build();
 
                 let parquet_writer =
-                    AsyncArrowWriter::try_new(writer, record_batch.schema(), 1024, Some(props)).context(ParquetSnafu {})?;
+                    AsyncArrowWriter::try_new(writer, record_batch.schema(), 1024, Some(props))
+                        .context(ParquetSnafu {})?;
 
                 self.tmp_csvs
                     .insert(table.clone(), TmpCSVWriter::AsyncParquet(parquet_writer));
@@ -1427,9 +1440,11 @@ impl FlatFiles {
             let writer = self.tmp_csvs.get_mut(table).unwrap(); //key known
 
             if let TmpCSVWriter::AsyncParquet(parquet_writer) = writer {
-                parquet_writer.write(&record_batch).await.context(ParquetSnafu {})?;
+                parquet_writer
+                    .write(&record_batch)
+                    .await
+                    .context(ParquetSnafu {})?;
             }
-
         }
         for val in self.table_rows.values_mut() {
             val.clear();
@@ -1441,14 +1456,13 @@ impl FlatFiles {
         for (table, rows) in self.table_rows.iter_mut() {
             if !self.tmp_csvs.contains_key(table) {
                 if self.options.csv {
-
                     let path = format!(
                         "{}/{}/{}.csv",
                         self.output_dir.to_string_lossy(),
                         if self.direct { "csv" } else { "tmp" },
                         table
                     );
-                    
+
                     let (_id, writer) = self
                         .object_store
                         .as_ref()
@@ -1462,7 +1476,7 @@ impl FlatFiles {
                         .create_writer(writer);
 
                     self.tmp_csvs
-                        .insert(table.clone(),  TmpCSVWriter::AsyncCSV(csv_writer));
+                        .insert(table.clone(), TmpCSVWriter::AsyncCSV(csv_writer));
                 } else {
                     self.tmp_csvs.insert(table.clone(), TmpCSVWriter::None());
                 }
@@ -1557,7 +1571,6 @@ impl FlatFiles {
     }
 
     pub fn process_value(&mut self, value: Value, initial_path: Vec<SmartString>) {
-
         if let Some(json_path) = self.json_path.as_mut() {
             json_path.set_json(Box::new(value.clone()));
             let output = json_path.find_slice();
@@ -1671,18 +1684,10 @@ impl FlatFiles {
             table_metadata.fields_set.insert(row.field_name.clone());
             table_metadata.field_counts.push(0);
 
-            let options = DescriberOptions::builder()
-                .force_string(!self.options.no_link && row.field_name.starts_with("_link"))
-                .stats(self.options.stats && self.options.threads == 1)
-                .build();
-
-            table_metadata
-                .describers
-                .push(Describer::new_with_options(options));
             table_metadata.ignore_fields.push(false);
             match row.field_title {
                 Some(field_title) => table_metadata.field_titles.push(field_title),
-                None => table_metadata.field_titles.push(row.field_name),
+                None => table_metadata.field_titles.push(row.field_name.clone()),
             }
 
             match row.field_type {
@@ -1710,6 +1715,15 @@ impl FlatFiles {
                         .push(ArrayBuilders::String(vec![]))
                 }
             }
+
+            let options = DescriberOptions::builder()
+                .force_string(!self.options.no_link && row.field_name.starts_with("_link"))
+                .stats(self.options.stats && self.options.threads == 1)
+                .build();
+
+            table_metadata
+                .describers
+                .push(Describer::new_with_options(options));
         }
 
         Ok(())
@@ -1881,6 +1895,7 @@ impl FlatFiles {
         };
 
         #[cfg(not(target_family = "wasm"))]
+        #[cfg(feature = "parquet")]
         if self.options.parquet && !self.options.memory {
             self.log_info("Converting to parquet");
             let options = csvs_convert::Options::builder().build();
@@ -1961,10 +1976,10 @@ impl FlatFiles {
                     inner.shutdown().await.context(FlattererFileWriteSnafu {
                         filename: file.clone(),
                     })?;
-                },
+                }
                 TmpCSVWriter::AsyncParquet(parquet_writer) => {
                     parquet_writer.close().await.context(ParquetSnafu {})?;
-                },
+                }
                 _ => {}
             }
         }
@@ -2482,7 +2497,8 @@ impl FlatFiles {
             true,
             Some(&csv_path.to_string_lossy()),
             false,
-        ).context(FlattererXLSXSnafu)?;
+        )
+        .context(FlattererXLSXSnafu)?;
 
         for (table_name, metadata) in self.table_metadata.iter() {
             if metadata.rows > 1048576 {
@@ -3044,12 +3060,7 @@ pub fn flatten_to_memory<R: Read>(input: BufReader<R>, mut options: Options) -> 
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn flatten_all(
-    inputs: Vec<String>,
-    output: String,
-    options: Options,
-) -> Result<()> {
-
+pub fn flatten_all(inputs: Vec<String>, output: String, options: Options) -> Result<()> {
     let mut final_options = options.clone();
 
     let mut analysis_options = options.clone();
@@ -3060,7 +3071,9 @@ pub fn flatten_all(
         final_options.memory = true;
         do_analysis = true;
         if options.xlsx || options.sqlite || !options.postgres_connection.is_empty() {
-            return Err(Error::FlattererOptionError { message: "When writing to s3 can only choose CSV or Parquet outputs".into() })
+            return Err(Error::FlattererOptionError {
+                message: "When writing to s3 can only choose CSV or Parquet outputs".into(),
+            });
         }
     }
 
@@ -3068,9 +3081,11 @@ pub fn flatten_all(
         do_analysis = true
     }
 
-    if (!options.fields_csv.is_empty() || !options.fields_csv_string.is_empty()) && options.only_fields {
+    if (!options.fields_csv.is_empty() || !options.fields_csv_string.is_empty())
+        && options.only_fields
+    {
         do_analysis = false;
-    } 
+    }
 
     if !final_options.s3 && inputs.len() == 1 && !options.low_disk && options.threads != 1 {
         let rt = runtime::Builder::new_current_thread()
@@ -3078,21 +3093,19 @@ pub fn flatten_all(
             .build()
             .expect("Failed to create tokio runtime");
 
-        rt.block_on( async {
+        rt.block_on(async {
             let buf_read = get_buf_read(inputs[0].clone(), options.gzip_input).await?;
-            let output = rt.spawn_blocking(move || {
-                flatten(buf_read, output, options)
-            });
+            let output = rt.spawn_blocking(move || flatten(buf_read, output, options));
             output.await.context(JoinSnafu)??;
             Ok::<(), Error>(())
         })?;
-        return Ok(())
+        return Ok(());
     }
 
     if do_analysis {
         info!("Doing analysis first");
         if inputs.contains(&"-".to_string()) {
-            return Err(Error::FlattererOptionError { message: "Can not use stdin when using `low_disk` or exporting to s3 without supplying fields.csv".into() })
+            return Err(Error::FlattererOptionError { message: "Can not use stdin when using `low_disk` or exporting to s3 without supplying fields.csv".into() });
         }
         analysis_options.memory = true;
         analysis_options.csv = false;
@@ -3107,14 +3120,18 @@ pub fn flatten_all(
             .build()
             .expect("Failed to create tokio runtime");
 
-        let mut analysis_flat_files = FlatFiles::new_with_runtime("".into(), analysis_options.clone(), rt)?;
+        let mut analysis_flat_files =
+            FlatFiles::new_with_runtime("".into(), analysis_options.clone(), rt)?;
 
         for input in inputs.iter() {
             analysis_flat_files = flatten_single(input.into(), analysis_flat_files)?
         }
 
         analysis_flat_files.write_files()?;
-        let fields_bytes = analysis_flat_files.files_memory.get("fields.csv").expect("should exist");
+        let fields_bytes = analysis_flat_files
+            .files_memory
+            .get("fields.csv")
+            .expect("should exist");
         final_options.fields_csv_string = String::from_utf8_lossy(&fields_bytes).to_string();
         final_options.only_fields = true;
     }
@@ -3124,11 +3141,7 @@ pub fn flatten_all(
         .build()
         .expect("Failed to create tokio runtime");
 
-    let mut flat_files = FlatFiles::new_with_runtime(
-        output.clone(),
-        final_options.clone(),
-        rt
-    )?;
+    let mut flat_files = FlatFiles::new_with_runtime(output.clone(), final_options.clone(), rt)?;
 
     let s3 = flat_files.options.s3;
 
@@ -3151,7 +3164,7 @@ pub fn flatten_all(
     if output.starts_with("s3://") {
         let rt = flat_files.rt.take().expect("should exist");
 
-        rt.block_on( async {
+        rt.block_on(async {
             flat_files.write_files_async().await?;
             Ok(())
         })
@@ -3170,12 +3183,18 @@ pub fn flatten_all(
 async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Send>, Error> {
     let buf_reader: Box<dyn BufRead + Send> = if input.starts_with("http") {
         let http_builder = object_store::http::HttpBuilder::new();
-        let http = http_builder.with_url(&input).build().context(ObjectStoreSnafu {})?;
-        let http_response = http.get(&Path::from("")).await.context(ObjectStoreSnafu {})?;
+        let http = http_builder
+            .with_url(&input)
+            .build()
+            .context(ObjectStoreSnafu {})?;
+        let http_response = http
+            .get(&Path::from(""))
+            .await
+            .context(ObjectStoreSnafu {})?;
         let stream = http_response.into_stream();
         let async_reader = tokio_util::io::StreamReader::new(stream);
 
-        if input.ends_with(".gz") || gzip{
+        if input.ends_with(".gz") || gzip {
             let mut gzip_decoder = GzipDecoder::new(async_reader);
             gzip_decoder.multiple_members(true);
             let deflate_reader = tokio::io::BufReader::new(gzip_decoder);
@@ -3195,7 +3214,10 @@ async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Sen
         let mut path = url.path().to_string();
         path.remove(0);
 
-        let http_response = s3.get(&Path::from(path)).await.context(ObjectStoreSnafu {})?;
+        let http_response = s3
+            .get(&Path::from(path))
+            .await
+            .context(ObjectStoreSnafu {})?;
 
         let stream = http_response.into_stream();
         let async_reader = tokio_util::io::StreamReader::new(stream);
@@ -3232,28 +3254,25 @@ async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Sen
     Ok(buf_reader)
 }
 
-
 #[cfg(not(target_family = "wasm"))]
-pub fn flatten_single(
-    input: String,
-    mut flat_files: FlatFiles,
-) -> Result<FlatFiles> {
+pub fn flatten_single(input: String, mut flat_files: FlatFiles) -> Result<FlatFiles> {
     let channel_size = if flat_files.options.low_memory {
         flat_files.options.threads + 10
     } else {
         1000
     };
-    let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) = bounded(channel_size);
+    let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) =
+        bounded(channel_size);
 
     let (stop_sender, stop_receiver) = bounded(1);
 
     let options = flat_files.options.clone();
     let options_clone = flat_files.options.clone();
 
-    let join_handler = thread::spawn(move || { 
+    let join_handler = thread::spawn(move || {
         let rt = flat_files.rt.take().expect("Failed to get tokio runtime");
 
-        let mut output = rt.block_on( async {
+        let mut output = rt.block_on(async {
             let mut reciever = item_receiver;
             log::debug!("Starting item reviever");
             item_reciever(options_clone, &mut reciever, flat_files, stop_receiver).await
@@ -3269,19 +3288,19 @@ pub fn flatten_single(
     });
 
     let send_join_handler = thread::spawn(move || {
-
         let rt = runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .expect("Failed to create tokio runtime");
 
-        rt.block_on( async {
+        rt.block_on(async {
             let buf_read = get_buf_read(input, options.gzip_input).await?;
             rt.spawn_blocking(move || {
                 send_json_items(&options, buf_read, item_sender, vec![stop_sender], None)
-            }).await.context(JoinSnafu)
+            })
+            .await
+            .context(JoinSnafu)
         })
-
     });
 
     match send_join_handler.join() {
@@ -3296,14 +3315,17 @@ pub fn flatten_single(
     }
 
     match join_handler.join() {
-        Ok(result) => {
-            result
-        }
-        Err(err) => panic::resume_unwind(Box::new(err))
+        Ok(result) => result,
+        Err(err) => panic::resume_unwind(Box::new(err)),
     }
 }
 
-async fn item_reciever(options_clone: Options, item_receiver: &mut Receiver<Item>, mut flat_files: FlatFiles, stop_receiver: Receiver<()>) -> Result<FlatFiles, Error> {
+async fn item_reciever(
+    options_clone: Options,
+    item_receiver: &mut Receiver<Item>,
+    mut flat_files: FlatFiles,
+    stop_receiver: Receiver<()>,
+) -> Result<FlatFiles, Error> {
     let smart_path = options_clone
         .path
         .iter()
@@ -3327,7 +3349,6 @@ async fn item_reciever(options_clone: Options, item_receiver: &mut Receiver<Item
 
         let value: Value = serde_result.context(SerdeReadSnafu {})?;
 
-
         if !value.is_object() {
             return Err(Error::FlattererProcessError {
                 message: format!(
@@ -3350,7 +3371,7 @@ async fn item_reciever(options_clone: Options, item_receiver: &mut Receiver<Item
                 if count % 100 == 0 {
                     flat_files.create_arrow_cols().await?;
                 }
-            } else { 
+            } else {
                 match flat_files.create_rows_async().await {
                     Ok(_) => {}
                     Err(e) => {
@@ -3384,7 +3405,6 @@ async fn item_reciever(options_clone: Options, item_receiver: &mut Receiver<Item
             flat_files.create_arrow_cols().await?;
         }
     }
-
 
     if count == 0 && flat_files.options.threads != 2 {
         return Err(Error::FlattererProcessError {
@@ -3437,7 +3457,11 @@ pub fn flatten(input: Box<dyn BufRead>, output: String, mut options: Options) ->
     let mut output_paths = vec![];
     let mut join_handlers = vec![];
 
-    let channel_size = if options.low_memory {options.threads + 10 } else { 1000 };
+    let channel_size = if options.low_memory {
+        options.threads + 10
+    } else {
+        1000
+    };
 
     let (item_sender, item_receiver_initial): (Sender<Item>, Receiver<yajlparser::Item>) =
         bounded(channel_size);
@@ -3584,6 +3608,7 @@ pub fn flatten(input: Box<dyn BufRead>, output: String, mut options: Options) ->
             filename: parts_path.to_string_lossy(),
         })?;
 
+        #[cfg(feature = "parquet")]
         if options.parquet {
             info!("Writing merged parquet files");
             let op = csvs_convert::Options::builder().build();
@@ -3653,7 +3678,6 @@ pub fn flatten(input: Box<dyn BufRead>, output: String, mut options: Options) ->
 
     Ok(())
 }
-
 
 fn send_json_items(
     options: &Options,
@@ -3765,10 +3789,11 @@ pub fn flatten_simple<R: Read>(
 
     if options.ndjson {
         for line in input.lines() {
-            let value = serde_json::from_str(&line.context(FlattererIoSnafu)?).context(SerdeReadSnafu)?;
+            let value =
+                serde_json::from_str(&line.context(FlattererIoSnafu)?).context(SerdeReadSnafu)?;
             flat_files.process_value(value, vec![]);
             flat_files.create_rows()?;
-        };
+        }
         flat_files.write_files()?;
         return Ok(());
     } else {
@@ -3970,7 +3995,6 @@ mod tests {
             name.push_str("-json_path-");
         }
 
-
         flatten_options.json_stream = !file.ends_with(".json") && !file.ends_with(".json.gz");
 
         flatten_options.postgres_schema = name.clone();
@@ -3990,15 +4014,15 @@ mod tests {
             inputs.push(extra_file.into());
         }
 
-        let result = flatten_all(
-            inputs,
-            output_path.clone(),
-            flatten_options,
-        );
+        let result = flatten_all(inputs, output_path.clone(), flatten_options);
 
         if let Err(error) = result {
             if let Some(error_text) = options["error_text"].as_str() {
-                assert!(error.to_string().contains(error_text), "error was {}", error.to_string())
+                assert!(
+                    error.to_string().contains(error_text),
+                    "error was {}",
+                    error.to_string()
+                )
             } else {
                 panic!(
                     "Error raised and there is no error_text to match it. Error was \n{}",
@@ -4020,7 +4044,8 @@ mod tests {
             let new_name = format!("{}-{}", name, test_file);
             if test_file.ends_with(".json") {
                 let value: Value = serde_json::from_reader(
-                    File::open(format!("{}/{}", output_path.clone(), test_file)).expect(&format!("{test_file} should exist")),
+                    File::open(format!("{}/{}", output_path.clone(), test_file))
+                        .expect(&format!("{test_file} should exist")),
                 )
                 .unwrap();
                 insta::assert_yaml_snapshot!(new_name, &value, {
@@ -4329,20 +4354,12 @@ mod tests {
 
     #[test]
     fn test_low_disk() {
-        test_output(
-            "fixtures/basic.json",
-            vec![],
-            json!({"low_disk": true}),
-        )
+        test_output("fixtures/basic.json", vec![], json!({"low_disk": true}))
     }
 
     #[test]
     fn test_low_memory() {
-        test_output(
-            "fixtures/basic.json",
-            vec![],
-            json!({"low_memory": true}),
-        )
+        test_output("fixtures/basic.json", vec![], json!({"low_memory": true}))
     }
 
     #[test]
@@ -4374,52 +4391,41 @@ mod tests {
 
     #[test]
     fn test_gz_input() {
-        test_output(
-            "fixtures/basic.json.gz",
-            vec![],
-            json!({}),
-        )
+        test_output("fixtures/basic.json.gz", vec![], json!({}))
     }
 
     #[test]
     fn test_s3_input() {
         if std::env::var("AWS_DEFAULT_REGION").is_ok() {
-            test_output(
-                "s3://flatterer-test/data/basic.json",
-                vec![],
-                json!({}),
-            );
+            test_output("s3://flatterer-test/data/basic.json", vec![], json!({}));
 
-            test_output(
-                "s3://flatterer-test/data/basic.json.gz",
-                vec![],
-                json!({}),
-            )
+            test_output("s3://flatterer-test/data/basic.json.gz", vec![], json!({}))
         }
     }
 
     #[test]
     fn test_s3() {
         if std::env::var("AWS_DEFAULT_REGION").is_ok() {
-            let options = Options::builder()
-            .parquet(true)
-            .json_stream(true)
-            .build();
+            let options = Options::builder().parquet(true).json_stream(true).build();
 
             flatten_all(
-                vec!["fixtures/daily_16.json".into(), "fixtures/daily_16.json".into()], // reader
-                "s3://flatterer-test/9".into(),                       // output directory
+                vec![
+                    "fixtures/daily_16.json".into(),
+                    "fixtures/daily_16.json".into(),
+                ], // reader
+                "s3://flatterer-test/9".into(), // output directory
                 options,
             )
             .unwrap();
 
-            let options = Options::builder()
-            .json_stream(true)
-            .build();
+            let options = Options::builder().json_stream(true).build();
 
             flatten_all(
-                vec!["fixtures/daily_16.json".into(), "fixtures/daily_16.json".into()], // reader
-                "s3://flatterer-test/9".into(),                       // output directory
+                vec![
+                    "fixtures/daily_16.json".into(),
+                    "fixtures/daily_16.json".into(),
+                ], // reader
+                "s3://flatterer-test/9".into(), // output directory
                 options,
             )
             .unwrap();
@@ -4430,25 +4436,26 @@ mod tests {
     fn test_download_upload_s3() {
         if std::env::var("AWS_DEFAULT_REGION").is_ok() {
             let options = Options::builder()
-            .parquet(true)
-            .ndjson(true)
-            .force(true)
-            .build();
+                .parquet(true)
+                .ndjson(true)
+                .force(true)
+                .build();
 
             flatten_all(
                 //vec!["statements.2023-03-08T11:08:56Z.jsonl.gz".into()], // reader
                 //vec!["statsmall.jsonl".into()], // reader
                 //vec!["statements.2023-03-08T11:08:56Z.jsonl.gz".into()], // reader
                 //vec!["https://oo-register-production.s3-eu-west-1.amazonaws.com/public/exports/statements.2023-03-08T11:08:56Z.jsonl.gz".into()], // reader
-                vec!["https://flatterer-test.s3.eu-west-2.amazonaws.com/data/daily_16.json.gz".into()], // reader
-                "s3://flatterer-test/1".into(),                       // output directory
+                vec![
+                    "https://flatterer-test.s3.eu-west-2.amazonaws.com/data/daily_16.json.gz"
+                        .into(),
+                ], // reader
+                "s3://flatterer-test/1".into(), // output directory
                 options,
             )
             .unwrap();
         }
     }
-
-
 
     #[test]
     fn check_nesting() {
@@ -4591,8 +4598,10 @@ mod tests {
         let mut logger = Logger::start();
 
         flatten(
-            Box::new(BufReader::new(File::open("fixtures/large_cell.json").unwrap())), // reader
-            tmp_dir.path().to_string_lossy().into(),                         // output directory
+            Box::new(BufReader::new(
+                File::open("fixtures/large_cell.json").unwrap(),
+            )), // reader
+            tmp_dir.path().to_string_lossy().into(), // output directory
             options,
         )
         .unwrap();
@@ -4608,8 +4617,10 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
-            Box::new(BufReader::new(File::open("fixtures/large_cell.json").unwrap())), // reader
-            tmp_dir.path().to_string_lossy().into(),                         // output directory
+            Box::new(BufReader::new(
+                File::open("fixtures/large_cell.json").unwrap(),
+            )), // reader
+            tmp_dir.path().to_string_lossy().into(), // output directory
             options,
         )
         .unwrap();
@@ -4623,16 +4634,13 @@ mod tests {
 
     #[test]
     fn test_multi_small() {
-        let options = Options::builder()
-            .threads(4)
-            .force(true)
-            .build();
+        let options = Options::builder().threads(4).force(true).build();
 
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
             Box::new(BufReader::new(File::open("fixtures/basic.json").unwrap())), // reader
-            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            tmp_dir.path().to_string_lossy().into(), // output directory
             options,
         )
         .unwrap();
@@ -4642,7 +4650,6 @@ mod tests {
                 .unwrap();
 
         insta::assert_yaml_snapshot!(&value);
-
     }
 
     #[test]
@@ -4661,8 +4668,10 @@ mod tests {
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
-            Box::new(BufReader::new(File::open("fixtures/daily_16.json").unwrap())), // reader
-            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            Box::new(BufReader::new(
+                File::open("fixtures/daily_16.json").unwrap(),
+            )), // reader
+            tmp_dir.path().to_string_lossy().into(), // output directory
             options,
         )
         .unwrap();
@@ -4686,13 +4695,19 @@ mod tests {
 
     #[test]
     fn test_multi_speed() {
-        let options = Options::builder().ndjson(true).threads(0).force(true).build();
+        let options = Options::builder()
+            .ndjson(true)
+            .threads(0)
+            .force(true)
+            .build();
 
         let tmp_dir = TempDir::new().unwrap();
 
         flatten(
-            Box::new(BufReader::new(File::open("fixtures/daily_16.json").unwrap())), // reader
-            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            Box::new(BufReader::new(
+                File::open("fixtures/daily_16.json").unwrap(),
+            )), // reader
+            tmp_dir.path().to_string_lossy().into(), // output directory
             options,
         )
         .unwrap();
@@ -4711,7 +4726,6 @@ mod tests {
         )
         .unwrap();
     }
-
 
     #[test]
     fn test_evolve() {
@@ -4746,7 +4760,9 @@ mod tests {
             .build();
 
         flatten(
-            Box::new(BufReader::new(File::open("fixtures/basic_evolve.json").unwrap())),
+            Box::new(BufReader::new(
+                File::open("fixtures/basic_evolve.json").unwrap(),
+            )),
             tmp_dir.path().to_string_lossy().into(),
             options,
         )
@@ -4797,6 +4813,4 @@ mod tests {
             Options::builder().build(),
         )
     }
-
 }
-
