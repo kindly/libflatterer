@@ -2770,7 +2770,7 @@ impl FlatFiles {
     }
 }
 
-fn value_convert(value: Value, describers: &mut Vec<Describer>, num: usize) -> String {
+fn value_convert(value: Value, describers: &mut [Describer], num: usize) -> String {
     let describer = &mut describers[num];
 
     match value {
