@@ -24,7 +24,7 @@
 //!
 //!```
 //!
-//! Lower level usage, use the `FlatFiles` struct directly and supply options.  
+//! Lower level usage, use the `FlatFiles` struct directly and supply options.
 //!
 //!```
 //! use tempfile::TempDir;
@@ -66,6 +66,10 @@
 //!
 //!```
 
+#![allow(clippy::invalid_regex)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::result_large_err)]
+
 mod guess_array;
 mod postgresql;
 
@@ -75,67 +79,44 @@ mod schema_analysis;
 #[cfg(not(target_family = "wasm"))]
 mod yajlparser;
 
-use indexmap::IndexMap as HashMap;
-use indexmap::IndexSet as Set;
-
 #[cfg(not(target_family = "wasm"))]
 use std::convert::TryInto;
-use std::fmt;
-use std::fs::{create_dir_all, remove_dir_all, File};
-
 #[cfg(not(target_family = "wasm"))]
 use std::io::BufRead;
-use std::io::{BufReader, Read, Write};
-
 #[cfg(not(target_family = "wasm"))]
 use std::io::{self};
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
-
+use std::{
+    fmt,
+    fs::{create_dir_all, remove_dir_all, File},
+    io::{BufReader, Read, Write},
+    path::PathBuf,
+    str::FromStr,
+    sync::atomic::{AtomicBool, Ordering},
+};
 #[cfg(not(target_family = "wasm"))]
 use std::{panic, thread};
 
 #[cfg(not(target_family = "wasm"))]
+use async_compression::tokio::bufread::GzipDecoder;
+#[cfg(not(target_family = "wasm"))]
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
-
-#[cfg(not(target_family = "wasm"))]
-use csvs_convert::{
-    datapackage_to_postgres_with_options, datapackage_to_sqlite_with_options, 
-    datapackage_to_xlsx_with_options, merge_datapackage_with_options,
-};
-
+use csv_async::{AsyncWriter, AsyncWriterBuilder};
 #[cfg(not(target_family = "wasm"))]
 #[cfg(feature = "parquet")]
 use csvs_convert::datapackage_to_parquet_with_options;
-
+#[cfg(not(target_family = "wasm"))]
+use csvs_convert::{
+    datapackage_to_postgres_with_options, datapackage_to_sqlite_with_options,
+    datapackage_to_xlsx_with_options, merge_datapackage_with_options,
+};
 use csvs_convert::{Describer, DescriberOptions};
-
+use flate2::{write::GzEncoder, Compression};
 pub use guess_array::guess_array;
+use indexmap::{IndexMap as HashMap, IndexSet as Set};
 use itertools::Itertools;
-use log::info;
-use log::warn;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Deserializer, Map, Value};
-use smallvec::{smallvec, SmallVec};
-use smartstring::alias::String as SmartString;
-use snafu::{Backtrace, ResultExt, Snafu};
-use typed_builder::TypedBuilder;
-
-use flate2::write::GzEncoder;
-use flate2::Compression;
-#[cfg(not(target_family = "wasm"))]
-use xlsxwriter::Workbook;
-#[cfg(not(target_family = "wasm"))]
-use yajlish::Parser;
-#[cfg(not(target_family = "wasm"))]
-use yajlparser::Item;
-
-#[cfg(not(target_family = "wasm"))]
-use async_compression::tokio::bufread::GzipDecoder;
-use csv_async::{AsyncWriter, AsyncWriterBuilder};
 use jsonpath_rust::{JsonPathFinder, JsonPathInst};
+use log::{info, warn};
 #[cfg(not(target_family = "wasm"))]
 use object_store::aws::AmazonS3Builder;
 #[cfg(not(target_family = "wasm"))]
@@ -144,6 +125,11 @@ use object_store::path::Path;
 use object_store::ObjectStore;
 #[cfg(not(target_family = "wasm"))]
 use parquet::arrow::async_writer::AsyncArrowWriter;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Deserializer, Map, Value};
+use smallvec::{smallvec, SmallVec};
+use smartstring::alias::String as SmartString;
+use snafu::{Backtrace, ResultExt, Snafu};
 #[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncWrite;
 #[cfg(not(target_family = "wasm"))]
@@ -152,13 +138,19 @@ use tokio::io::AsyncWriteExt;
 use tokio::runtime;
 #[cfg(not(target_family = "wasm"))]
 use tokio::sync::mpsc;
+use typed_builder::TypedBuilder;
+#[cfg(not(target_family = "wasm"))]
+use xlsxwriter::Workbook;
+#[cfg(not(target_family = "wasm"))]
+use yajlish::Parser;
+#[cfg(not(target_family = "wasm"))]
+use yajlparser::Item;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
 }
 
 lazy_static::lazy_static! {
-    #[allow(clippy::invalid_regex)]
     static ref INVALID_REGEX: regex::Regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
         .octal(true)
         .build()
@@ -1619,17 +1611,15 @@ impl FlatFiles {
     }
 
     pub fn use_tables_csv(&mut self) -> Result<()> {
-        let reader: Box<dyn Read>;
-
-        if self.options.tables_csv_string.is_empty() {
-            reader = Box::new(File::open(&self.options.tables_csv).context(
-                FlattererReadSnafu {
+        let reader: Box<dyn Read> = if self.options.tables_csv_string.is_empty() {
+            Box::new(
+                File::open(&self.options.tables_csv).context(FlattererReadSnafu {
                     filepath: PathBuf::from(&self.options.tables_csv),
-                },
-            )?);
+                })?,
+            )
         } else {
-            reader = Box::new(self.options.tables_csv_string.as_bytes());
-        }
+            Box::new(self.options.tables_csv_string.as_bytes())
+        };
 
         let mut tables_reader = Reader::from_reader(reader);
 
@@ -1643,17 +1633,15 @@ impl FlatFiles {
     }
 
     pub fn use_fields_csv(&mut self) -> Result<()> {
-        let reader: Box<dyn Read>;
-
-        if self.options.fields_csv_string.is_empty() {
-            reader = Box::new(File::open(&self.options.fields_csv).context(
-                FlattererReadSnafu {
+        let reader: Box<dyn Read> = if self.options.fields_csv_string.is_empty() {
+            Box::new(
+                File::open(&self.options.fields_csv).context(FlattererReadSnafu {
                     filepath: PathBuf::from(&self.options.fields_csv),
-                },
-            )?);
+                })?,
+            )
         } else {
-            reader = Box::new(self.options.fields_csv_string.as_bytes());
-        }
+            Box::new(self.options.fields_csv_string.as_bytes())
+        };
 
         let mut fields_reader = Reader::from_reader(reader);
 
@@ -1932,7 +1920,7 @@ impl FlatFiles {
         } else {
             let tmp_path = self.output_dir.join("tmp");
 
-            if remove_dir_all(&tmp_path).is_err() {
+            if remove_dir_all(tmp_path).is_err() {
                 log::warn!("Temp files can not be deleted, continuing anyway");
             }
             self.log_info("Writing metadata files");
@@ -2257,7 +2245,7 @@ impl FlatFiles {
             );
 
             if !self.options.xlsx {
-                self.tmp_memory.remove(table_name);
+                self.tmp_memory.swap_remove(table_name);
             }
         }
 
@@ -2687,7 +2675,7 @@ impl FlatFiles {
                 fields.push(format!(
                     "    \"{}\" {}",
                     metadata.field_titles_lc[order],
-                    postgresql::to_postgresql_type(&metadata.describers[order].guess_type().0)
+                    postgresql::to_postgresql_type(metadata.describers[order].guess_type().0)
                 ));
             }
             write!(postgresql_schema, "{}", fields.join(",\n")).context(
@@ -2757,7 +2745,7 @@ impl FlatFiles {
                 fields.push(format!(
                     "    \"{}\" {}",
                     metadata.field_titles_lc[order],
-                    postgresql::to_postgresql_type(&metadata.describers[order].guess_type().0)
+                    postgresql::to_postgresql_type(metadata.describers[order].guess_type().0)
                 ));
             }
             write!(sqlite_schema, "{}", fields.join(",\n")).context(FlattererFileWriteSnafu {
@@ -2782,7 +2770,7 @@ impl FlatFiles {
     }
 }
 
-fn value_convert(value: Value, describers: &mut Vec<Describer>, num: usize) -> String {
+fn value_convert(value: Value, describers: &mut [Describer], num: usize) -> String {
     let describer = &mut describers[num];
 
     match value {
@@ -3034,7 +3022,7 @@ pub fn flatten_to_memory<R: Read>(input: BufReader<R>, mut options: Options) -> 
                 json = pointed.take();
             } else {
                 return Err(Error::FlattererProcessError {
-                    message: format!("No value at given path"),
+                    message: "No value at given path".to_string(),
                 });
             }
         }
@@ -3132,7 +3120,7 @@ pub fn flatten_all(inputs: Vec<String>, output: String, options: Options) -> Res
             .files_memory
             .get("fields.csv")
             .expect("should exist");
-        final_options.fields_csv_string = String::from_utf8_lossy(&fields_bytes).to_string();
+        final_options.fields_csv_string = String::from_utf8_lossy(fields_bytes).to_string();
         final_options.only_fields = true;
     }
 
@@ -3151,12 +3139,10 @@ pub fn flatten_all(inputs: Vec<String>, output: String, options: Options) -> Res
     for input in inputs {
         let flat_files_result = flatten_single(input, flat_files);
 
-        if flat_files_result.is_err() {
-            if !s3 {
-                remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
-                    filename: PathBuf::from(&output).to_string_lossy(),
-                })?;
-            }
+        if flat_files_result.is_err() && !s3 {
+            remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
+                filename: PathBuf::from(&output).to_string_lossy(),
+            })?;
         }
         flat_files = flat_files_result?;
     }
@@ -3400,10 +3386,8 @@ async fn item_reciever(
         }
     }
 
-    if flat_files.options.s3 {
-        if flat_files.options.parquet {
-            flat_files.create_arrow_cols().await?;
-        }
+    if flat_files.options.s3 && flat_files.options.parquet {
+        flat_files.create_arrow_cols().await?;
     }
 
     if count == 0 && flat_files.options.threads != 2 {
@@ -3425,7 +3409,7 @@ async fn item_reciever(
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn flatten(input: Box<dyn BufRead>, output: String, mut options: Options) -> Result<()> {
+pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Options) -> Result<()> {
     if options.threads == 0 {
         options.threads = num_cpus::get()
     }
@@ -3873,10 +3857,12 @@ pub fn flatten_simple<R: Read>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use logtest::Logger;
     use std::fs::{read_to_string, remove_file};
+
+    use logtest::Logger;
     use tempfile::TempDir;
+
+    use super::*;
 
     fn test_output(file: &str, output: Vec<&str>, options: Value) {
         let tmp_dir = TempDir::new().unwrap();
@@ -4021,7 +4007,7 @@ mod tests {
                 assert!(
                     error.to_string().contains(error_text),
                     "error was {}",
-                    error.to_string()
+                    error
                 )
             } else {
                 panic!(
@@ -4045,7 +4031,7 @@ mod tests {
             if test_file.ends_with(".json") {
                 let value: Value = serde_json::from_reader(
                     File::open(format!("{}/{}", output_path.clone(), test_file))
-                        .expect(&format!("{test_file} should exist")),
+                        .unwrap_or_else(|_| panic!("{test_file} should exist")),
                 )
                 .unwrap();
                 insta::assert_yaml_snapshot!(new_name, &value, {
@@ -4065,7 +4051,7 @@ mod tests {
     #[test]
     fn string_list() {
         test_output(
-            &format!("fixtures/basic_list.json"),
+            "fixtures/basic_list.json",
             vec!["csv/main.csv", "csv/rating.csv", "csv/moo_names.csv"],
             json!({"arrays_new_table":true}),
         )
@@ -4688,9 +4674,9 @@ mod tests {
                 .count(),
             5000
         );
-        assert!(PathBuf::from(tmp_dir.path().join("parquet/main.parquet")).exists());
-        assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
-        assert!(PathBuf::from(tmp_dir.path().join("output.xlsx")).exists());
+        assert!(tmp_dir.path().join("parquet/main.parquet").exists());
+        assert!(tmp_dir.path().join("sqlite.db").exists());
+        assert!(tmp_dir.path().join("output.xlsx").exists());
     }
 
     #[test]
