@@ -66,6 +66,8 @@
 //!
 //!```
 
+#![allow(clippy::invalid_regex)]
+
 mod guess_array;
 mod postgresql;
 
@@ -147,7 +149,6 @@ lazy_static::lazy_static! {
 }
 
 lazy_static::lazy_static! {
-    #[allow(clippy::invalid_regex)]
     static ref INVALID_REGEX: regex::Regex = regex::RegexBuilder::new(r"[\000-\010]|[\013-\014]|[\016-\037]")
         .octal(true)
         .build()
