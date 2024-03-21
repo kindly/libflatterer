@@ -24,7 +24,7 @@
 //!
 //!```
 //!
-//! Lower level usage, use the `FlatFiles` struct directly and supply options.  
+//! Lower level usage, use the `FlatFiles` struct directly and supply options.
 //!
 //!```
 //! use tempfile::TempDir;
