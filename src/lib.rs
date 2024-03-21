@@ -67,6 +67,8 @@
 //!```
 
 #![allow(clippy::invalid_regex)]
+#![allow(clippy::large_enum_variant)]
+#![allow(clippy::result_large_err)]
 
 mod guess_array;
 mod postgresql;
