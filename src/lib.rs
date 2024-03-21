@@ -1920,7 +1920,7 @@ impl FlatFiles {
         } else {
             let tmp_path = self.output_dir.join("tmp");
 
-            if remove_dir_all(&tmp_path).is_err() {
+            if remove_dir_all(tmp_path).is_err() {
                 log::warn!("Temp files can not be deleted, continuing anyway");
             }
             self.log_info("Writing metadata files");
@@ -2675,7 +2675,7 @@ impl FlatFiles {
                 fields.push(format!(
                     "    \"{}\" {}",
                     metadata.field_titles_lc[order],
-                    postgresql::to_postgresql_type(&metadata.describers[order].guess_type().0)
+                    postgresql::to_postgresql_type(metadata.describers[order].guess_type().0)
                 ));
             }
             write!(postgresql_schema, "{}", fields.join(",\n")).context(
@@ -2745,7 +2745,7 @@ impl FlatFiles {
                 fields.push(format!(
                     "    \"{}\" {}",
                     metadata.field_titles_lc[order],
-                    postgresql::to_postgresql_type(&metadata.describers[order].guess_type().0)
+                    postgresql::to_postgresql_type(metadata.describers[order].guess_type().0)
                 ));
             }
             write!(sqlite_schema, "{}", fields.join(",\n")).context(FlattererFileWriteSnafu {
@@ -3120,7 +3120,7 @@ pub fn flatten_all(inputs: Vec<String>, output: String, options: Options) -> Res
             .files_memory
             .get("fields.csv")
             .expect("should exist");
-        final_options.fields_csv_string = String::from_utf8_lossy(&fields_bytes).to_string();
+        final_options.fields_csv_string = String::from_utf8_lossy(fields_bytes).to_string();
         final_options.only_fields = true;
     }
 
