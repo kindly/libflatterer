@@ -4007,7 +4007,7 @@ mod tests {
                 assert!(
                     error.to_string().contains(error_text),
                     "error was {}",
-                    error.to_string()
+                    error
                 )
             } else {
                 panic!(
@@ -4031,7 +4031,7 @@ mod tests {
             if test_file.ends_with(".json") {
                 let value: Value = serde_json::from_reader(
                     File::open(format!("{}/{}", output_path.clone(), test_file))
-                        .expect(&format!("{test_file} should exist")),
+                        .unwrap_or_else(|_| panic!("{test_file} should exist")),
                 )
                 .unwrap();
                 insta::assert_yaml_snapshot!(new_name, &value, {
