@@ -2246,7 +2246,7 @@ impl FlatFiles {
             );
 
             if !self.options.xlsx {
-                self.tmp_memory.remove(table_name);
+                self.tmp_memory.swap_remove(table_name);
             }
         }
 
