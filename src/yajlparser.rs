@@ -136,7 +136,7 @@ impl<W: std::io::Write> ParseJson<W> {
             };
             return Status::Continue;
         }
-        return Status::Continue;
+        Status::Continue
     }
 
     fn send_json(&mut self, _ctx: &Context) -> Status {
