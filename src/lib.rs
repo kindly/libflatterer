@@ -3140,12 +3140,10 @@ pub fn flatten_all(inputs: Vec<String>, output: String, options: Options) -> Res
     for input in inputs {
         let flat_files_result = flatten_single(input, flat_files);
 
-        if flat_files_result.is_err() {
-            if !s3 {
-                remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
-                    filename: PathBuf::from(&output).to_string_lossy(),
-                })?;
-            }
+        if flat_files_result.is_err() && !s3 {
+            remove_dir_all(PathBuf::from(&output)).context(FlattererRemoveDirSnafu {
+                filename: PathBuf::from(&output).to_string_lossy(),
+            })?;
         }
         flat_files = flat_files_result?;
     }
