@@ -1611,17 +1611,15 @@ impl FlatFiles {
     }
 
     pub fn use_tables_csv(&mut self) -> Result<()> {
-        let reader: Box<dyn Read>;
-
-        if self.options.tables_csv_string.is_empty() {
-            reader = Box::new(File::open(&self.options.tables_csv).context(
-                FlattererReadSnafu {
+        let reader: Box<dyn Read> = if self.options.tables_csv_string.is_empty() {
+            Box::new(
+                File::open(&self.options.tables_csv).context(FlattererReadSnafu {
                     filepath: PathBuf::from(&self.options.tables_csv),
-                },
-            )?);
+                })?,
+            )
         } else {
-            reader = Box::new(self.options.tables_csv_string.as_bytes());
-        }
+            Box::new(self.options.tables_csv_string.as_bytes())
+        };
 
         let mut tables_reader = Reader::from_reader(reader);
 
@@ -1635,17 +1633,15 @@ impl FlatFiles {
     }
 
     pub fn use_fields_csv(&mut self) -> Result<()> {
-        let reader: Box<dyn Read>;
-
-        if self.options.fields_csv_string.is_empty() {
-            reader = Box::new(File::open(&self.options.fields_csv).context(
-                FlattererReadSnafu {
+        let reader: Box<dyn Read> = if self.options.fields_csv_string.is_empty() {
+            Box::new(
+                File::open(&self.options.fields_csv).context(FlattererReadSnafu {
                     filepath: PathBuf::from(&self.options.fields_csv),
-                },
-            )?);
+                })?,
+            )
         } else {
-            reader = Box::new(self.options.fields_csv_string.as_bytes());
-        }
+            Box::new(self.options.fields_csv_string.as_bytes())
+        };
 
         let mut fields_reader = Reader::from_reader(reader);
 
