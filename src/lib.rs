@@ -4051,7 +4051,7 @@ mod tests {
     #[test]
     fn string_list() {
         test_output(
-            &format!("fixtures/basic_list.json"),
+            "fixtures/basic_list.json",
             vec!["csv/main.csv", "csv/rating.csv", "csv/moo_names.csv"],
             json!({"arrays_new_table":true}),
         )
