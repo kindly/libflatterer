@@ -1,6 +1,7 @@
+use std::io::prelude::*;
+
 use crossbeam_channel::Sender;
 use smartstring::alias::String as SmartString;
-use std::io::prelude::*;
 use yajlish::{Context, Enclosing, Handler, Status};
 
 use crate::FlatFiles;
@@ -111,7 +112,8 @@ impl<W: std::io::Write> ParseJson<W> {
             if !value.is_object() {
                 self.error = format!(
                     "Value at array position {} is not an object: value is `{}`",
-                    self.count - 1, value
+                    self.count - 1,
+                    value
                 );
                 return Status::Abort;
             }
@@ -303,11 +305,13 @@ impl<W: std::io::Write> Handler for ParseJson<W> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::fs::File;
+
     use crossbeam_channel::bounded;
     use serde_json::Value;
-    use std::fs::File;
     use yajlish::Parser;
+
+    use super::*;
 
     fn parse(file: &str, stream: bool) -> (Vec<Value>, Vec<Vec<SmartString>>, String) {
         let mut outer: Vec<u8> = vec![];
