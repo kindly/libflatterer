@@ -3387,10 +3387,8 @@ async fn item_reciever(
         }
     }
 
-    if flat_files.options.s3 {
-        if flat_files.options.parquet {
-            flat_files.create_arrow_cols().await?;
-        }
+    if flat_files.options.s3 && flat_files.options.parquet {
+        flat_files.create_arrow_cols().await?;
     }
 
     if count == 0 && flat_files.options.threads != 2 {
