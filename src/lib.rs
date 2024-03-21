@@ -75,67 +75,44 @@ mod schema_analysis;
 #[cfg(not(target_family = "wasm"))]
 mod yajlparser;
 
-use indexmap::IndexMap as HashMap;
-use indexmap::IndexSet as Set;
-
 #[cfg(not(target_family = "wasm"))]
 use std::convert::TryInto;
-use std::fmt;
-use std::fs::{create_dir_all, remove_dir_all, File};
-
 #[cfg(not(target_family = "wasm"))]
 use std::io::BufRead;
-use std::io::{BufReader, Read, Write};
-
 #[cfg(not(target_family = "wasm"))]
 use std::io::{self};
-use std::path::PathBuf;
-use std::str::FromStr;
-use std::sync::atomic::{AtomicBool, Ordering};
-
+use std::{
+    fmt,
+    fs::{create_dir_all, remove_dir_all, File},
+    io::{BufReader, Read, Write},
+    path::PathBuf,
+    str::FromStr,
+    sync::atomic::{AtomicBool, Ordering},
+};
 #[cfg(not(target_family = "wasm"))]
 use std::{panic, thread};
 
 #[cfg(not(target_family = "wasm"))]
+use async_compression::tokio::bufread::GzipDecoder;
+#[cfg(not(target_family = "wasm"))]
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
-
-#[cfg(not(target_family = "wasm"))]
-use csvs_convert::{
-    datapackage_to_postgres_with_options, datapackage_to_sqlite_with_options, 
-    datapackage_to_xlsx_with_options, merge_datapackage_with_options,
-};
-
+use csv_async::{AsyncWriter, AsyncWriterBuilder};
 #[cfg(not(target_family = "wasm"))]
 #[cfg(feature = "parquet")]
 use csvs_convert::datapackage_to_parquet_with_options;
-
+#[cfg(not(target_family = "wasm"))]
+use csvs_convert::{
+    datapackage_to_postgres_with_options, datapackage_to_sqlite_with_options,
+    datapackage_to_xlsx_with_options, merge_datapackage_with_options,
+};
 use csvs_convert::{Describer, DescriberOptions};
-
+use flate2::{write::GzEncoder, Compression};
 pub use guess_array::guess_array;
+use indexmap::{IndexMap as HashMap, IndexSet as Set};
 use itertools::Itertools;
-use log::info;
-use log::warn;
-use serde::{Deserialize, Serialize};
-use serde_json::{json, Deserializer, Map, Value};
-use smallvec::{smallvec, SmallVec};
-use smartstring::alias::String as SmartString;
-use snafu::{Backtrace, ResultExt, Snafu};
-use typed_builder::TypedBuilder;
-
-use flate2::write::GzEncoder;
-use flate2::Compression;
-#[cfg(not(target_family = "wasm"))]
-use xlsxwriter::Workbook;
-#[cfg(not(target_family = "wasm"))]
-use yajlish::Parser;
-#[cfg(not(target_family = "wasm"))]
-use yajlparser::Item;
-
-#[cfg(not(target_family = "wasm"))]
-use async_compression::tokio::bufread::GzipDecoder;
-use csv_async::{AsyncWriter, AsyncWriterBuilder};
 use jsonpath_rust::{JsonPathFinder, JsonPathInst};
+use log::{info, warn};
 #[cfg(not(target_family = "wasm"))]
 use object_store::aws::AmazonS3Builder;
 #[cfg(not(target_family = "wasm"))]
@@ -144,6 +121,11 @@ use object_store::path::Path;
 use object_store::ObjectStore;
 #[cfg(not(target_family = "wasm"))]
 use parquet::arrow::async_writer::AsyncArrowWriter;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Deserializer, Map, Value};
+use smallvec::{smallvec, SmallVec};
+use smartstring::alias::String as SmartString;
+use snafu::{Backtrace, ResultExt, Snafu};
 #[cfg(not(target_family = "wasm"))]
 use tokio::io::AsyncWrite;
 #[cfg(not(target_family = "wasm"))]
@@ -152,6 +134,13 @@ use tokio::io::AsyncWriteExt;
 use tokio::runtime;
 #[cfg(not(target_family = "wasm"))]
 use tokio::sync::mpsc;
+use typed_builder::TypedBuilder;
+#[cfg(not(target_family = "wasm"))]
+use xlsxwriter::Workbook;
+#[cfg(not(target_family = "wasm"))]
+use yajlish::Parser;
+#[cfg(not(target_family = "wasm"))]
+use yajlparser::Item;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -3873,10 +3862,12 @@ pub fn flatten_simple<R: Read>(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use logtest::Logger;
     use std::fs::{read_to_string, remove_file};
+
+    use logtest::Logger;
     use tempfile::TempDir;
+
+    use super::*;
 
     fn test_output(file: &str, output: Vec<&str>, options: Value) {
         let tmp_dir = TempDir::new().unwrap();
