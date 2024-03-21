@@ -3409,7 +3409,7 @@ async fn item_reciever(
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn flatten(input: Box<dyn BufRead>, output: String, mut options: Options) -> Result<()> {
+pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Options) -> Result<()> {
     if options.threads == 0 {
         options.threads = num_cpus::get()
     }
