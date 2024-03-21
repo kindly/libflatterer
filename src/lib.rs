@@ -3022,7 +3022,7 @@ pub fn flatten_to_memory<R: Read>(input: BufReader<R>, mut options: Options) -> 
                 json = pointed.take();
             } else {
                 return Err(Error::FlattererProcessError {
-                    message: format!("No value at given path"),
+                    message: "No value at given path".to_string(),
                 });
             }
         }
