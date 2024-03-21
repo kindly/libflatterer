@@ -4674,9 +4674,9 @@ mod tests {
                 .count(),
             5000
         );
-        assert!(PathBuf::from(tmp_dir.path().join("parquet/main.parquet")).exists());
-        assert!(PathBuf::from(tmp_dir.path().join("sqlite.db")).exists());
-        assert!(PathBuf::from(tmp_dir.path().join("output.xlsx")).exists());
+        assert!(tmp_dir.path().join("parquet/main.parquet").exists());
+        assert!(tmp_dir.path().join("sqlite.db").exists());
+        assert!(tmp_dir.path().join("output.xlsx").exists());
     }
 
     #[test]
