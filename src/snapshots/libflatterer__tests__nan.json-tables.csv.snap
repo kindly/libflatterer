@@ -1,0 +1,9 @@
+---
+source: src/lib.rs
+expression: output
+---
+- "table_name,table_title"
+- "contracts,contracts"
+- "contracts_items,contracts_items"
+- "main,main"
+

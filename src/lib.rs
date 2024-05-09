@@ -17,7 +17,7 @@
 //! let options = Options::builder().xlsx(true).sqlite(true).parquet(true).table_prefix("prefix_".into()).build();
 //!
 //! flatten(
-//!    Box::new(BufReader::new(File::open("fixtures/basic.json").unwrap())), // reader
+//!    BufReader::new(File::open("fixtures/basic.json").unwrap()), // reader
 //!    output_dir.to_string_lossy().into(), // output directory
 //!    options, // options
 //! ).unwrap();
@@ -1422,7 +1422,7 @@ impl FlatFiles {
                     .build();
 
                 let parquet_writer =
-                    AsyncArrowWriter::try_new(writer, record_batch.schema(), 1024, Some(props))
+                    AsyncArrowWriter::try_new(writer, record_batch.schema(), Some(props))
                         .context(ParquetSnafu {})?;
 
                 self.tmp_csvs
@@ -2600,14 +2600,18 @@ impl FlatFiles {
 
                     if metadata.describers[order].guess_type().0 == "number" {
                         if let Ok(number) = cell.parse::<f64>() {
-                            worksheet
-                                .write_number(
-                                    (row_num + 1).try_into().context(FlattererIntSnafu {})?,
-                                    col_index,
-                                    number,
-                                    None,
-                                )
-                                .context(FlattererXLSXSnafu {})?;
+                            if number.is_finite() {
+                                worksheet
+                                    .write_number(
+                                        (row_num + 1).try_into().context(FlattererIntSnafu {})?,
+                                        col_index,
+                                        number,
+                                        None,
+                                    )
+                                    .context(FlattererXLSXSnafu {})?;
+                            } else {
+                                warn!("Skipped \"{number:?}\" as it is not a valid number in XLSX format.");
+                            }
                         } else {
                             worksheet
                                 .write_string(
@@ -4378,6 +4382,11 @@ mod tests {
     #[test]
     fn test_gz_input() {
         test_output("fixtures/basic.json.gz", vec![], json!({}))
+    }
+
+    #[test]
+    fn test_nan() {
+        test_output("fixtures/nan.json", vec![], json!({"xlsx": true}))
     }
 
     #[test]

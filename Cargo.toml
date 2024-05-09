@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.19.13"
+version = "0.19.14"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -28,7 +28,7 @@ lazy_static = "1"
 typed-builder = "0.18.0"
 num_cpus = "1.13.1"
 flate2 = "1.0.24"
-csvs_convert = { version = "0.8.9", default-features = false, features = ["converters"] }
+csvs_convert = { version = "0.8.10", default-features = false, features = ["converters"] }
 bytes = "1.4.0"
 url = "2.3.1"
 jsonpath-rust = "0.3.0"
@@ -39,21 +39,21 @@ jsonpath-rust = "0.3.0"
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 jsonref = "0.4"
-object_store = { version = "0.8.0", features = ["aws", "http"] }
+object_store = { version = "0.9.0", features = ["aws", "http"] }
 #object_store = { git = "https://github.com/apache/arrow-rs.git", features = ["aws", "http"]}
 
 crossbeam-channel = "0.5"
 tempfile = "3"
 xlsxwriter = "0.6"
 nanoid = "0.4.0"
-tokio = { version = "1.27.0", features = ["rt"] }
+tokio = { version = "1.37.0", features = ["rt"] }
 csv-async = { version = "1.2.6", features = ["tokio"] }
 futures-util = { version = "0.3.27" }
-parquet = { version = "49.0.0", features = ["async"] }
+parquet = { version = "51.0.0", features = ["async"] }
 tokio-util = { version = "0.7.7", features = ["io", "io-util"] }
 futures = { version = "0.3.28" }
-arrow-array = "49.0.0"
-arrow-schema = "49.0.0"
+arrow-array = "51.0.0"
+arrow-schema = "51.0.0"
 async-compression = { version = "0.4.5", features = ["gzip", "tokio"] }
 env_logger = "0.10.0"
 
