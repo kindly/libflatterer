@@ -421,6 +421,9 @@ pub struct Options {
     /// drop tables
     #[builder(default)]
     pub drop: bool,
+    /// truncate tables
+    #[builder(default)]
+    pub truncate: bool,
     /// postgres schema
     #[builder(default)]
     pub postgres_schema: String,
@@ -1869,6 +1872,7 @@ impl FlatFiles {
 
             let options = csvs_convert::Options::builder()
                 .drop(self.options.drop)
+                .truncate(self.options.truncate)
                 .evolve(self.options.evolve)
                 .build();
 
@@ -1900,6 +1904,7 @@ impl FlatFiles {
             self.log_info("Loading data into postgres");
             let options = csvs_convert::Options::builder()
                 .drop(self.options.drop)
+                .truncate(self.options.truncate)
                 .evolve(self.options.evolve)
                 .schema(self.options.postgres_schema.clone())
                 .build();
@@ -3612,6 +3617,7 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
             info!("Loading data into postgres");
             let op = csvs_convert::Options::builder()
                 .drop(options.drop)
+                .truncate(options.truncate)
                 .schema(options.postgres_schema.clone())
                 .evolve(options.evolve)
                 .build();
@@ -3627,6 +3633,7 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
             info!("Writing merged sqlite file");
             let op = csvs_convert::Options::builder()
                 .drop(options.drop)
+                .truncate(options.truncate)
                 .evolve(options.evolve)
                 .build();
 
