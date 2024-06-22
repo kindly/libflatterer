@@ -1149,21 +1149,35 @@ impl FlatFiles {
                             if self.direct { "csv" } else { "tmp" },
                             table
                         ));
-                        let mut writer = WriterBuilder::new()
-                            .flexible(!self.direct)
-                            .from_writer(get_writer_from_path(&output_path)?);
-                        if self.direct {
-                            writer
-                                .write_record(
-                                    self.table_metadata.get(table).unwrap().field_titles.clone(),
-                                )
-                                .context(FlattererCSVWriteSnafu {
-                                    filepath: &output_path,
-                                })?
+
+
+                        if self.direct && !self.table_order.contains_key(table) {
+                            #[cfg(not(target_family = "wasm"))]
+                            self.tmp_csvs
+                                .insert(table.clone(), TmpCSVWriter::None());
+                        } else if self.options.only_tables && !self.table_order.contains_key(table) {
+                            #[cfg(not(target_family = "wasm"))]
+                            self.tmp_csvs
+                                .insert(table.clone(), TmpCSVWriter::None());
+                        } else {
+                            let mut writer = WriterBuilder::new()
+                                .flexible(!self.direct)
+                                .from_writer(get_writer_from_path(&output_path)?);
+
+                            if self.direct {
+                                writer
+                                    .write_record(
+                                        self.table_metadata.get(table).unwrap().field_titles.clone(),
+                                    )
+                                    .context(FlattererCSVWriteSnafu {
+                                        filepath: &output_path,
+                                    })?
+                            }
+                            #[cfg(not(target_family = "wasm"))]
+                            self.tmp_csvs
+                                .insert(table.clone(), TmpCSVWriter::Disk(writer));
                         }
-                        #[cfg(not(target_family = "wasm"))]
-                        self.tmp_csvs
-                            .insert(table.clone(), TmpCSVWriter::Disk(writer));
+
                     }
                 } else {
                     self.tmp_csvs.insert(table.clone(), TmpCSVWriter::None());
@@ -1172,19 +1186,27 @@ impl FlatFiles {
 
             if !self.table_metadata.contains_key(table) {
                 let output_path = self.output_dir.join(format!("tmp/{}.csv", table));
+                let mut table_metadata = TableMetadata::new(
+                    table,
+                    &self.main_table_name,
+                    &self.options.path_separator,
+                    &self.options.table_prefix,
+                    output_path,
+                );
+
+                if self.options.only_tables && !self.table_order.contains_key(table) {
+                    table_metadata.ignore = true;
+                }
+
                 self.table_metadata.insert(
                     table.clone(),
-                    TableMetadata::new(
-                        table,
-                        &self.main_table_name,
-                        &self.options.path_separator,
-                        &self.options.table_prefix,
-                        output_path,
-                    ),
+                    table_metadata
                 );
-                if !self.options.only_tables && !self.table_order.contains_key(table) {
+
+                if !self.table_order.contains_key(table) {
                     self.table_order.insert(table.clone(), table.clone());
                 }
+
             }
 
             let table_metadata = self.table_metadata.get_mut(table).unwrap(); //key known
@@ -1489,7 +1511,7 @@ impl FlatFiles {
                         output_path,
                     ),
                 );
-                if !self.options.only_tables && !self.table_order.contains_key(table) {
+                if !self.table_order.contains_key(table) {
                     self.table_order.insert(table.clone(), table.clone());
                 }
             }
@@ -2090,6 +2112,10 @@ impl FlatFiles {
                         .table_order
                         .get(&field_title[6..])
                         .expect("table should be in table order");
+
+                    // if let TmpCSVWriter::None() = self.tmp_csvs.get(&field_title[6..]).unwrap() {
+                    //     continue;
+                    // }
                     foreign_keys.push(
                         json!(
                         {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
@@ -4727,6 +4753,31 @@ mod tests {
             options,
         )
         .unwrap();
+    }
+
+    #[test]
+    fn test_missing_middle_table() {
+        let options = Options::builder().force(true).fields_csv("fixtures/missing_middle_fields.csv".into()).only_fields(true).build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        flatten_all(
+            vec!["fixtures/basic_in_object_with_extra.json".into()], 
+            // "/tmp/missing_middle_table".into(),
+            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            options
+        ).unwrap();
+
+        let options = Options::builder().force(true).tables_csv("fixtures/missing_middle_tables.csv".into()).only_tables(true).build();
+
+        let tmp_dir = TempDir::new().unwrap();
+
+        flatten_all(
+            vec!["fixtures/basic_in_object_with_extra.json".into()], 
+            // "/tmp/missing_middle_table".into(),
+            tmp_dir.path().to_string_lossy().into(),                       // output directory
+            options
+        ).unwrap();
     }
 
     #[test]
