@@ -2062,6 +2062,19 @@ impl FlatFiles {
     pub fn write_data_package(&mut self, lowercase_names: bool) -> Result<()> {
         let mut resources = vec![];
 
+        let mut tables_to_exclude = vec![];
+
+        for (table_name, table_title) in self.table_order.iter() {
+            let metadata = self
+                .table_metadata
+                .get(table_name)
+                .expect("table should be in metadata");
+            
+            if metadata.rows == 0 || metadata.ignore {
+                tables_to_exclude.push(table_title);
+            }
+        }
+
         for (table_name, table_title) in self.table_order.iter() {
             let metadata = self
                 .table_metadata
@@ -2113,13 +2126,12 @@ impl FlatFiles {
                         .get(&field_title[6..])
                         .expect("table should be in table order");
 
-                    // if let TmpCSVWriter::None() = self.tmp_csvs.get(&field_title[6..]).unwrap() {
-                    //     continue;
-                    // }
-                    foreign_keys.push(
-                        json!(
-                        {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
-                    ))
+                    if !tables_to_exclude.contains(&foreign_table) {
+                        foreign_keys.push(
+                            json!(
+                            {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
+                        ))
+                    }
                 };
             }
 
