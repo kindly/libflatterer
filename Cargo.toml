@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.19.17"
+version = "0.19.18"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -28,7 +28,7 @@ lazy_static = "1"
 typed-builder = "0.18.0"
 num_cpus = "1.13.1"
 flate2 = "1.0.24"
-csvs_convert = { version = "0.8.11", default-features = false, features = ["converters"] }
+csvs_convert = { version = "0.8.12", default-features = false, features = ["converters"] }
 bytes = "1.4.0"
 url = "2.3.1"
 jsonpath-rust = "0.3.0"
