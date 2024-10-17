@@ -68,11 +68,11 @@ resources:
           type: number
           format: number
           count: 83192
-        - name: clouds
-          title: clouds
+        - name: rain
+          title: rain
           type: number
           format: number
-          count: 83192
+          count: 50409
         - name: pressure
           title: pressure
           type: number
@@ -95,6 +95,11 @@ resources:
           count: 83192
         - name: deg
           title: deg
+          type: number
+          format: number
+          count: 83192
+        - name: clouds
+          title: clouds
           type: number
           format: number
           count: 83192
@@ -133,11 +138,6 @@ resources:
           type: number
           format: number
           count: 13273
-        - name: rain
-          title: rain
-          type: number
-          format: number
-          count: 50409
       primaryKey: _link
       foreignKeys:
         - fields: _link_main
