@@ -83,8 +83,6 @@ mod yajlparser;
 use std::convert::TryInto;
 #[cfg(not(target_family = "wasm"))]
 use std::io::BufRead;
-#[cfg(not(target_family = "wasm"))]
-use std::io::{self};
 use std::{
     fmt,
     fs::{create_dir_all, remove_dir_all, File},
@@ -140,7 +138,7 @@ use tokio::runtime;
 use tokio::sync::mpsc;
 use typed_builder::TypedBuilder;
 #[cfg(not(target_family = "wasm"))]
-use xlsxwriter::Workbook;
+use rust_xlsxwriter::Workbook;
 #[cfg(not(target_family = "wasm"))]
 use yajlish::Parser;
 #[cfg(not(target_family = "wasm"))]
@@ -248,7 +246,7 @@ pub enum Error {
     FlattererOSError { message: String },
     #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Error with writing XLSX file"))]
-    FlattererXLSXError { source: xlsxwriter::XlsxError },
+    FlattererXLSXError { source: rust_xlsxwriter::XlsxError },
     #[snafu(display("Could not convert usize to int"))]
     FlattererIntError { source: std::num::TryFromIntError },
     #[snafu(display("YAJLish parse error: {}", error))]
@@ -556,37 +554,6 @@ struct FieldsRecord {
 struct TablesRecord {
     table_name: String,
     table_title: String,
-}
-
-#[cfg(not(target_family = "wasm"))]
-struct JLWriter {
-    pub buf: Vec<u8>,
-    pub buf_sender: Sender<(Vec<u8>, bool)>,
-}
-
-#[cfg(not(target_family = "wasm"))]
-impl Write for JLWriter {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        if buf == [b'\n'] {
-            if self.buf_sender.send((self.buf.clone(), false)).is_err() {
-                log::error!(
-                    "Unable to process any data, most likely caused by termination of worker"
-                );
-                return Err(io::Error::new(
-                    io::ErrorKind::Other,
-                    "Unable to process any data, most likely caused by termination of worker",
-                ));
-            }
-            self.buf.clear();
-            Ok(buf.len())
-        } else {
-            self.buf.extend_from_slice(buf);
-            Ok(buf.len())
-        }
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 impl FlatFiles {
@@ -2523,13 +2490,16 @@ impl FlatFiles {
             .output_dir
             .join(if self.direct { "csv" } else { "tmp" });
 
-        let workbook = Workbook::new_with_options(
-            &self.output_dir.join("output.xlsx").to_string_lossy(),
-            true,
-            Some(&csv_path.to_string_lossy()),
-            false,
-        )
-        .context(FlattererXLSXSnafu)?;
+        let mut workbook = Workbook::new();
+
+        // let workbook = Workbook::new_with_options(
+        //     &self.output_dir.join("output.xlsx").to_string_lossy(),
+        //     true,
+        //     Some(&csv_path.to_string_lossy()),
+        //     false,
+        // )
+        //.context(FlattererXLSXSnafu)?;
+
 
         for (table_name, metadata) in self.table_metadata.iter() {
             if metadata.rows > 1048576 {
@@ -2574,9 +2544,9 @@ impl FlatFiles {
 
             let metadata = self.table_metadata.get_mut(table_name).unwrap(); //key known
 
-            let mut worksheet = workbook
-                .add_worksheet(Some(&new_table_title))
-                .context(FlattererXLSXSnafu {})?;
+            let worksheet = workbook.add_worksheet_with_low_memory();
+            worksheet.set_name(&new_table_title).context(FlattererXLSXSnafu {})?;
+
 
             let filepath = csv_path.join(format!("{}.csv", table_name));
             let csv_reader = ReaderBuilder::new()
@@ -2600,7 +2570,7 @@ impl FlatFiles {
                     }
 
                     worksheet
-                        .write_string(0, col_index, &title, None)
+                        .write(0, col_index, &title)
                         .context(FlattererXLSXSnafu {})?;
                     col_index += 1;
                 }
@@ -2648,8 +2618,7 @@ impl FlatFiles {
                                     .write_number(
                                         (row_num + 1).try_into().context(FlattererIntSnafu {})?,
                                         col_index,
-                                        number,
-                                        None,
+                                        number
                                     )
                                     .context(FlattererXLSXSnafu {})?;
                             } else {
@@ -2661,7 +2630,6 @@ impl FlatFiles {
                                     (row_num + 1).try_into().context(FlattererIntSnafu {})?,
                                     col_index,
                                     &cell,
-                                    None,
                                 )
                                 .context(FlattererXLSXSnafu {})?;
                         };
@@ -2671,7 +2639,6 @@ impl FlatFiles {
                                 (row_num + 1).try_into().context(FlattererIntSnafu {})?,
                                 col_index,
                                 &cell,
-                                None,
                             )
                             .context(FlattererXLSXSnafu {})?;
                     }
@@ -2679,7 +2646,7 @@ impl FlatFiles {
                 }
             }
         }
-        workbook.close().context(FlattererXLSXSnafu {})?;
+        workbook.save(&self.output_dir.join("output.xlsx").to_string_lossy().to_string()).context(FlattererXLSXSnafu {})?;
 
         Ok(())
     }
