@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.20.0"
+version = "0.20.1"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -28,7 +28,7 @@ lazy_static = "1"
 typed-builder = "0.18.0"
 num_cpus = "1.13.1"
 flate2 = "1.0.24"
-csvs_convert = { version = "0.9.0", default-features = false, features = ["converters"] }
+csvs_convert = { version = "0.9.1", default-features = false, features = ["converters"] }
 bytes = "1.4.0"
 url = "2.3.1"
 jsonpath-rust = "0.3.0"
@@ -42,7 +42,7 @@ jsonref = "0.4"
 object_store = { version = "0.9.0", features = ["aws", "http"] }
 #object_store = { git = "https://github.com/apache/arrow-rs.git", features = ["aws", "http"]}
 
-rust_xlsxwriter = { version = "0.79.0", features = ["constant_memory"] }
+rust_xlsxwriter = { version = "0.84.2", features = ["constant_memory"] }
 crossbeam-channel = "0.5"
 tempfile = "3"
 nanoid = "0.4.0"
