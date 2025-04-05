@@ -2491,6 +2491,7 @@ impl FlatFiles {
             .join(if self.direct { "csv" } else { "tmp" });
 
         let mut workbook = Workbook::new();
+        workbook.set_tempdir(csv_path.clone()).context(FlattererXLSXSnafu {})?;
 
         // let workbook = Workbook::new_with_options(
         //     &self.output_dir.join("output.xlsx").to_string_lossy(),
