@@ -1,6 +1,6 @@
 [package]
 name = "libflatterer"
-version = "0.21.0"
+version = "0.21.1"
 authors = ["David Raznick <kindly@gmail.com>"]
 edition = "2021"
 description = "Lib to make JSON flatterer"
@@ -28,7 +28,7 @@ lazy_static = "1"
 typed-builder = "0.18.0"
 num_cpus = "1.13.1"
 flate2 = "1.0.24"
-csvs_convert = { version = "0.10.0", default-features = false, features = ["converters"] }
+csvs_convert = { version = "0.10.1", default-features = false, features = ["converters"] }
 bytes = "1.4.0"
 url = "2.3.1"
 jsonpath-rust = "0.3.0"
@@ -49,11 +49,11 @@ nanoid = "0.4.0"
 tokio = { version = "1.37.0", features = ["rt"] }
 csv-async = { version = "1.2.6", features = ["tokio"] }
 futures-util = { version = "0.3.27" }
-parquet = { version = "51.0.0", features = ["async"] }
+parquet = { version = "54.3.1", features = ["async"] }
 tokio-util = { version = "0.7.7", features = ["io", "io-util"] }
 futures = { version = "0.3.28" }
-arrow-array = "51.0.0"
-arrow-schema = "51.0.0"
+arrow-array = "54.3.1"
+arrow-schema = "54.3.1"
 async-compression = { version = "0.4.5", features = ["gzip", "tokio"] }
 env_logger = "0.10.0"
 
