@@ -107,6 +107,7 @@ use csvs_convert::datapackage_to_parquet_with_options;
 use csvs_convert::{
     datapackage_to_postgres_with_options, datapackage_to_sqlite_with_options,
     datapackage_to_xlsx_with_options, merge_datapackage_with_options,
+    datapackage_to_ods_with_options
 };
 use csvs_convert::{Describer, DescriberOptions};
 use flate2::{write::GzEncoder, Compression};
@@ -344,6 +345,9 @@ pub struct Options {
     /// Output parquet
     #[builder(default)]
     pub parquet: bool,
+    /// Output ods
+    #[builder(default)]
+    pub ods: bool,
     /// Table name of main table, default "main"
     #[builder(default="main".into())]
     pub main_table_name: String,
@@ -1824,6 +1828,7 @@ impl FlatFiles {
             || !self.options.postgres_connection.is_empty()
             || self.options.sqlite
             || !self.options.sqlite_path.is_empty()
+            || self.options.ods
         {
             if self.options.memory {
                 self.write_csvs_memory()?;
@@ -1882,6 +1887,18 @@ impl FlatFiles {
             let options = csvs_convert::Options::builder().build();
             datapackage_to_parquet_with_options(
                 self.output_dir.join("parquet"),
+                self.output_dir.to_string_lossy().into(),
+                options,
+            )
+            .context(DatapackageConvertSnafu {})?;
+        };
+
+        #[cfg(not(target_family = "wasm"))]
+        if self.options.ods && !self.options.memory {
+            self.log_info("Converting to ODS");
+            let options = csvs_convert::Options::builder().build();
+            datapackage_to_ods_with_options(
+                self.output_dir.join("output.ods").to_string_lossy().into(),
                 self.output_dir.to_string_lossy().into(),
                 options,
             )
@@ -3481,6 +3498,7 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
             options_clone.xlsx = false;
             options_clone.sqlite = false;
             options_clone.parquet = false;
+            options_clone.ods = false;
             options_clone.postgres_connection = "".into();
             options_clone.thread_name = format!("Thread {index}: ");
             output_path = parts_path.join(index.to_string());
@@ -3661,6 +3679,21 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
             datapackage_to_xlsx_with_options(
                 final_output_path
                     .join("output.xlsx")
+                    .to_string_lossy()
+                    .into(),
+                final_output_path.to_string_lossy().into(),
+                op,
+            )
+            .context(DatapackageConvertSnafu {})?;
+        }
+
+        if options.ods {
+            info!("Writing merged xlsx file");
+            let op = csvs_convert::Options::builder().build();
+
+            datapackage_to_ods_with_options(
+                final_output_path
+                    .join("output.ods")
                     .to_string_lossy()
                     .into(),
                 final_output_path.to_string_lossy().into(),
@@ -3936,6 +3969,10 @@ mod tests {
             flatten_options.xlsx = xlsx;
         }
 
+        if let Some(ods) = options["ods"].as_bool() {
+            flatten_options.ods = ods;
+        }
+
         if let Some(id_prefix) = options["id_prefix"].as_str() {
             flatten_options.id_prefix = id_prefix.into();
             name.push_str("-id_prefix")
@@ -4055,6 +4092,12 @@ mod tests {
                     ".resources[].schema.fields[].stats.deciles" => 0,
                     ".resources[].schema.fields[].stats.centiles" => 0,
                 });
+            } else if test_file.ends_with(".ods") {
+                assert!(
+                    File::open(format!("{}/{}", output_path.clone(), test_file))
+                        .is_ok(),
+                    "{test_file} should exist"
+                );
             } else {
                 let file_as_string =
                     read_to_string(format!("{}/{}", output_path.clone(), test_file)).unwrap();
@@ -4398,6 +4441,11 @@ mod tests {
     }
 
     #[test]
+    fn test_ods() {
+        test_output("fixtures/basic.json", vec!["output.ods"], json!({"ods": true}))
+    }
+
+    #[test]
     fn test_nan() {
         test_output("fixtures/nan.json", vec![], json!({"xlsx": true}))
     }
@@ -4667,6 +4715,7 @@ mod tests {
             .parquet(true)
             .sqlite(true)
             .xlsx(true)
+            .ods(true)
             .postgres_connection("postgres://test:test@localhost/test".into())
             .drop(true)
             .threads(0)
