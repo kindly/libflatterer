@@ -1,0 +1,9 @@
+---
+source: src/lib.rs
+expression: output
+snapshot_kind: text
+---
+- "table_name,table_title"
+- "main,main"
+- "developer,developer"
+- "platforms,platforms"

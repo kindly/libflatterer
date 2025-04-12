@@ -453,6 +453,8 @@ pub struct Options {
     pub json_path_selector: String,
     #[builder(default)]
     pub arrays_new_table: bool,
+    #[builder(default)]
+    pub all_strings: bool
 }
 
 pub struct FlatFiles {
@@ -1201,8 +1203,10 @@ impl FlatFiles {
                         table_metadata.fields_set.insert(key.clone());
                         table_metadata.field_counts.push(1);
                         table_metadata.ignore_fields.push(false);
+                        let force_string = self.options.all_strings || (!self.options.no_link && key.starts_with("_link"));
+
                         let options = DescriberOptions::builder()
-                            .force_string(!self.options.no_link && key.starts_with("_link"))
+                            .force_string(force_string)
                             .stats(self.options.stats && self.options.threads == 1)
                             .build();
                         table_metadata
@@ -3971,6 +3975,7 @@ mod tests {
 
         if let Some(ods) = options["ods"].as_bool() {
             flatten_options.ods = ods;
+            name.push_str("-ods");
         }
 
         if let Some(id_prefix) = options["id_prefix"].as_str() {
@@ -4018,6 +4023,11 @@ mod tests {
         if let Some(arrays_new_table) = options["arrays_new_table"].as_bool() {
             flatten_options.arrays_new_table = arrays_new_table;
             name.push_str("-arrow_new_table")
+        }
+
+        if let Some(all_strings) = options["all_strings"].as_bool() {
+            flatten_options.all_strings = all_strings;
+            name.push_str("-all_strings")
         }
 
         if let Some(path_values) = options["path"].as_array() {
@@ -4451,6 +4461,11 @@ mod tests {
     }
 
     #[test]
+    fn test_all_strings() {
+        test_output("fixtures/basic.json", vec![], json!({"all_strings": true}))
+    }
+
+    #[test]
     fn test_s3_input() {
         if std::env::var("AWS_DEFAULT_REGION").is_ok() {
             test_output("s3://flatterer-test/data/basic.json", vec![], json!({}));
@@ -4715,7 +4730,6 @@ mod tests {
             .parquet(true)
             .sqlite(true)
             .xlsx(true)
-            .ods(true)
             .postgres_connection("postgres://test:test@localhost/test".into())
             .drop(true)
             .threads(0)
