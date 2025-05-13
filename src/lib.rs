@@ -99,6 +99,7 @@ use async_compression::tokio::bufread::GzipDecoder;
 #[cfg(not(target_family = "wasm"))]
 use crossbeam_channel::{bounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
+#[cfg(not(target_family = "wasm"))]
 use csv_async::{AsyncWriter, AsyncWriterBuilder};
 #[cfg(not(target_family = "wasm"))]
 #[cfg(feature = "parquet")]
@@ -196,6 +197,7 @@ pub enum Error {
         source: csv::Error,
         backtrace: Backtrace,
     },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("Error writing to CSV file {}", filepath.to_string_lossy()))]
     FlattererCSVAsyncWriteError {
         filepath: PathBuf,
@@ -282,11 +284,13 @@ pub enum Error {
         source: csv::IntoInnerError<Writer<flate2::write::GzEncoder<File>>>,
         backtrace: Backtrace,
     },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("{}", source))]
     ObjectStoreError {
         source: object_store::Error,
         backtrace: Backtrace,
     },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("{}", source))]
     JoinError {
         source: tokio::task::JoinError,
@@ -297,6 +301,7 @@ pub enum Error {
         source: url::ParseError,
         backtrace: Backtrace,
     },
+    #[cfg(not(target_family = "wasm"))]
     #[snafu(display("{}", source))]
     ParquetError {
         source: parquet::errors::ParquetError,
@@ -326,7 +331,9 @@ enum TmpCSVWriter {
     #[cfg(not(target_family = "wasm"))]
     Disk(csv::Writer<File>),
     Memory(csv::Writer<GzEncoder<Vec<u8>>>),
+    #[cfg(not(target_family = "wasm"))]
     AsyncCSV(AsyncWriter<Box<dyn AsyncWrite + Unpin + Send>>),
+    #[cfg(not(target_family = "wasm"))]
     AsyncParquet(AsyncArrowWriter<Box<dyn AsyncWrite + Unpin + Send>>),
     None(),
 }
@@ -478,8 +485,10 @@ pub struct FlatFiles {
     pub csv_memory_gz: HashMap<String, Vec<u8>>,
     pub files_memory: HashMap<String, Vec<u8>>,
     direct: bool,
+    #[cfg(not(target_family = "wasm"))]
     object_store: Option<Box<dyn ObjectStore>>,
     json_path: Option<JsonPathFinder>,
+    #[cfg(not(target_family = "wasm"))]
     pub rt: Option<tokio::runtime::Runtime>,
 }
 
@@ -500,9 +509,11 @@ struct TableMetadata {
     #[serde(skip_serializing)]
     describers: Vec<Describer>,
     #[serde(skip_serializing)]
+    #[cfg(not(target_family = "wasm"))]
     arrow_vecs: Vec<ArrayBuilders>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 #[derive(Debug)]
 enum ArrayBuilders {
     Boolean(Vec<Option<bool>>),
@@ -543,6 +554,7 @@ impl TableMetadata {
             field_titles_lc: vec![],
             describers: vec![],
             supplied_types: vec![],
+            #[cfg(not(target_family = "wasm"))]
             arrow_vecs: vec![],
         }
     }
@@ -568,6 +580,7 @@ impl FlatFiles {
         Self::new(output_dir, options)
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub fn new_with_runtime(
         output_dir: String,
         options: Options,
@@ -620,6 +633,7 @@ impl FlatFiles {
         let direct = (!options.fields_csv.is_empty() || !options.fields_csv_string.is_empty())
             && options.only_fields;
 
+        #[cfg(not(target_family = "wasm"))]
         let object_store: Option<Box<dyn ObjectStore>> = if !options.s3 {
             None
         } else {
@@ -676,8 +690,10 @@ impl FlatFiles {
             csv_memory_gz: HashMap::new(),
             files_memory: HashMap::new(),
             direct,
+            #[cfg(not(target_family = "wasm"))]
             object_store,
             json_path,
+            #[cfg(not(target_family = "wasm"))]
             rt: None,
         };
 
@@ -1123,7 +1139,7 @@ impl FlatFiles {
                             table
                         ));
 
-
+                        #[cfg(not(target_family = "wasm"))]
                         if self.direct && !self.table_order.contains_key(table) {
                             #[cfg(not(target_family = "wasm"))]
                             self.tmp_csvs
@@ -1146,7 +1162,6 @@ impl FlatFiles {
                                         filepath: &output_path,
                                     })?
                             }
-                            #[cfg(not(target_family = "wasm"))]
                             self.tmp_csvs
                                 .insert(table.clone(), TmpCSVWriter::Disk(writer));
                         }
@@ -1255,6 +1270,7 @@ impl FlatFiles {
         Ok(())
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub async fn create_arrow_cols(&mut self) -> Result<()> {
         for (table, rows) in self.table_rows.iter_mut() {
             let table_metadata = self.table_metadata.get_mut(table).unwrap(); //key known
@@ -1444,6 +1460,7 @@ impl FlatFiles {
         Ok(())
     }
 
+    #[cfg(not(target_family = "wasm"))]
     pub async fn create_rows_async(&mut self) -> Result<()> {
         for (table, rows) in self.table_rows.iter_mut() {
             if !self.tmp_csvs.contains_key(table) {
@@ -1681,6 +1698,7 @@ impl FlatFiles {
             match row.field_type {
                 Some(field_type) => {
                     table_metadata.supplied_types.push(field_type.clone());
+                    #[cfg(not(target_family = "wasm"))]
                     match field_type.as_str() {
                         "boolean" => table_metadata
                             .arrow_vecs
@@ -1698,6 +1716,7 @@ impl FlatFiles {
                 }
                 None => {
                     table_metadata.supplied_types.push("string".into());
+                    #[cfg(not(target_family = "wasm"))]
                     table_metadata
                         .arrow_vecs
                         .push(ArrayBuilders::String(vec![]))
@@ -2489,7 +2508,7 @@ impl FlatFiles {
                 }
             }
 
-            self.tmp_memory.remove(table_name);
+            self.tmp_memory.shift_remove(table_name);
         }
 
         let mut output = std::io::Cursor::new(vec![]);
@@ -3202,6 +3221,7 @@ pub fn flatten_all(inputs: Vec<String>, output: String, options: Options) -> Res
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn get_buf_read(input: String, gzip: bool) -> Result<Box<dyn BufRead + Send>, Error> {
     let buf_reader: Box<dyn BufRead + Send> = if input.starts_with("http") {
         let http_builder = object_store::http::HttpBuilder::new();
@@ -3342,6 +3362,7 @@ pub fn flatten_single(input: String, mut flat_files: FlatFiles) -> Result<FlatFi
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 async fn item_reciever(
     options_clone: Options,
     item_receiver: &mut Receiver<Item>,
@@ -3717,6 +3738,7 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
     Ok(())
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn send_json_items(
     options: &Options,
     mut input: Box<dyn BufRead>,
