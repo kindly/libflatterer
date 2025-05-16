@@ -1,0 +1,69 @@
+---
+source: src/lib.rs
+expression: "&value"
+snapshot_kind: text
+---
+profile: tabular-data-package
+resources:
+  - profile: tabular-data-resource
+    name: main
+    flatterer_name: main
+    title: main
+    schema:
+      fields:
+        - name: _link
+          title: _link
+          type: string
+          format: string
+          count: 1
+          stats:
+            min_len: 1
+            max_len: 1
+            min_str: "0"
+            max_str: "0"
+            count: 1
+            empty_count: 0
+            exact_unique: 1
+            estimate_unique: ~
+            top_20:
+              - - "0"
+                - 1
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+        - name: a
+          title: a
+          type: string
+          format: string
+          count: 1
+          stats:
+            min_len: ~
+            max_len: ~
+            min_str: ~
+            max_str: ~
+            count: 0
+            empty_count: 1
+            exact_unique: ~
+            estimate_unique: 0
+            top_20: ~
+            sum: ~
+            mean: ~
+            variance: ~
+            stddev: ~
+            min_number: ~
+            max_number: ~
+            median: ~
+            lower_quartile: ~
+            upper_quartile: ~
+            deciles: 0
+            centiles: 0
+      primaryKey: _link
+    path: csv/main.csv
