@@ -1695,9 +1695,16 @@ impl FlatFiles {
                 None => table_metadata.field_titles.push(row.field_name.clone()),
             }
 
+            let mut string_field = false;
+
             match row.field_type {
                 Some(field_type) => {
                     table_metadata.supplied_types.push(field_type.clone());
+                    match field_type.as_str() {
+                        "string" => string_field = true,
+                        "text" => string_field = true,
+                        _ => {}
+                    }
                     #[cfg(not(target_family = "wasm"))]
                     match field_type.as_str() {
                         "boolean" => table_metadata
@@ -1723,8 +1730,13 @@ impl FlatFiles {
                 }
             }
 
+            let mut link_field = false;
+            if !self.options.no_link && row.field_name.starts_with("_link") {
+                link_field = true;
+            }
+
             let options = DescriberOptions::builder()
-                .force_string(!self.options.no_link && row.field_name.starts_with("_link"))
+                .force_string(link_field || string_field)
                 .stats(self.options.stats && self.options.threads == 1)
                 .build();
 
@@ -4485,6 +4497,11 @@ mod tests {
     #[test]
     fn test_all_strings() {
         test_output("fixtures/basic.json", vec![], json!({"all_strings": true}))
+    }
+
+    #[test] 
+    fn test_only_null_field() {
+        test_output("fixtures/only_null_field.json", vec![], json!({"fields_only": false, "fields_csv": "fixtures/only_null_fields.csv"}))
     }
 
     #[test]
