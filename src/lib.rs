@@ -88,7 +88,6 @@ use std::{
     fs::{create_dir_all, remove_dir_all, File},
     io::{BufReader, Read, Write},
     path::PathBuf,
-    str::FromStr,
     sync::atomic::{AtomicBool, Ordering},
 };
 #[cfg(not(target_family = "wasm"))]
@@ -115,14 +114,16 @@ use flate2::{write::GzEncoder, Compression};
 pub use guess_array::guess_array;
 use indexmap::{IndexMap as HashMap, IndexSet as Set};
 use itertools::Itertools;
-use jsonpath_rust::{JsonPathFinder, JsonPathInst};
+use jsonpath_rust::JsonPath;
 use log::{info, warn};
 #[cfg(not(target_family = "wasm"))]
 use object_store::aws::AmazonS3Builder;
 #[cfg(not(target_family = "wasm"))]
 use object_store::path::Path;
 #[cfg(not(target_family = "wasm"))]
-use object_store::ObjectStore;
+use object_store::buffered::BufWriter;
+#[cfg(not(target_family = "wasm"))]
+use object_store::{ObjectStore, ObjectStoreExt};
 #[cfg(not(target_family = "wasm"))]
 use parquet::arrow::async_writer::AsyncArrowWriter;
 use serde::{Deserialize, Serialize};
@@ -486,8 +487,8 @@ pub struct FlatFiles {
     pub files_memory: HashMap<String, Vec<u8>>,
     direct: bool,
     #[cfg(not(target_family = "wasm"))]
-    object_store: Option<Box<dyn ObjectStore>>,
-    json_path: Option<JsonPathFinder>,
+    object_store: Option<std::sync::Arc<dyn ObjectStore>>,
+    json_path: Option<String>,
     #[cfg(not(target_family = "wasm"))]
     pub rt: Option<tokio::runtime::Runtime>,
 }
@@ -634,7 +635,7 @@ impl FlatFiles {
             && options.only_fields;
 
         #[cfg(not(target_family = "wasm"))]
-        let object_store: Option<Box<dyn ObjectStore>> = if !options.s3 {
+        let object_store: Option<std::sync::Arc<dyn ObjectStore>> = if !options.s3 {
             None
         } else {
             let s3 = AmazonS3Builder::from_env()
@@ -651,7 +652,7 @@ impl FlatFiles {
                 )
                 .build()
                 .context(ObjectStoreSnafu {})?;
-            Some(Box::new(s3))
+            Some(std::sync::Arc::new(s3))
         };
 
         let mut new_output_dir = output_dir.clone();
@@ -665,8 +666,8 @@ impl FlatFiles {
         let json_path = if options.json_path_selector.is_empty() {
             None
         } else {
-            let jsonpath = JsonPathInst::from_str(&options.json_path_selector).unwrap();
-            Some(JsonPathFinder::new(Box::new(json!({})), Box::new(jsonpath)))
+            json!({}).query(&options.json_path_selector).unwrap();
+            Some(options.json_path_selector.clone())
         };
 
         let mut flat_files = Self {
@@ -821,7 +822,7 @@ impl FlatFiles {
                 } else if str_count == arr_length && !self.options.arrays_new_table {
                     let keys: Vec<String> = arr
                         .iter()
-                        .map(|val| (val.as_str().unwrap().to_string())) //value known as str
+                        .map(|val| val.as_str().unwrap().to_string()) //value known as str
                         .collect();
                     let mut csv_bytes = vec![];
                     {
@@ -1424,17 +1425,18 @@ impl FlatFiles {
                 );
 
                 let path: Path = Path::from(file_path);
-                let (_id, writer) = self
-                    .object_store
-                    .as_ref()
-                    .expect("object store should exist")
-                    .put_multipart(&path)
-                    .await
-                    .context(ObjectStoreSnafu {})?;
+                let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(BufWriter::new(
+                    std::sync::Arc::clone(
+                        self.object_store
+                            .as_ref()
+                            .expect("object store should exist"),
+                    ),
+                    path,
+                ));
 
                 let props = parquet::file::properties::WriterProperties::builder()
                     .set_compression(parquet::basic::Compression::SNAPPY)
-                    .set_max_row_group_size(1024 * 50)
+                    .set_max_row_group_row_count(Some(1024 * 50))
                     .build();
 
                 let parquet_writer =
@@ -1472,13 +1474,14 @@ impl FlatFiles {
                         table
                     );
 
-                    let (_id, writer) = self
-                        .object_store
-                        .as_ref()
-                        .expect("object store should exist")
-                        .put_multipart(&path.into())
-                        .await
-                        .context(ObjectStoreSnafu {})?;
+                    let writer: Box<dyn AsyncWrite + Unpin + Send> = Box::new(BufWriter::new(
+                        std::sync::Arc::clone(
+                            self.object_store
+                                .as_ref()
+                                .expect("object store should exist"),
+                        ),
+                        path.into(),
+                    ));
 
                     let csv_writer = AsyncWriterBuilder::new()
                         .flexible(!self.direct)
@@ -1580,13 +1583,11 @@ impl FlatFiles {
     }
 
     pub fn process_value(&mut self, value: Value, initial_path: Vec<SmartString>) {
-        if let Some(json_path) = self.json_path.as_mut() {
-            json_path.set_json(Box::new(value.clone()));
-            let output = json_path.find_slice();
-            for result in output {
-                if let jsonpath_rust::JsonPathValue::NoValue = result {
-                    return;
-                }
+        if let Some(json_path) = self.json_path.as_ref() {
+            let wrapped = Value::Array(vec![value.clone()]);
+            match wrapped.query(json_path) {
+                Ok(output) if !output.is_empty() => {}
+                _ => return,
             }
         }
 
@@ -2468,7 +2469,7 @@ impl FlatFiles {
                     }
 
                     worksheet
-                        .get_cell_by_column_and_row_mut(&col_index, &1)
+                        .get_cell_mut((col_index, 1))
                         .set_value(title);
                     col_index += 1;
                 }
@@ -2501,10 +2502,10 @@ impl FlatFiles {
                     }
 
                     worksheet
-                        .get_cell_by_column_and_row_mut(
-                            &col_index,
-                            &(row_num + 2).try_into().expect("row columns shoud exist"),
-                        )
+                        .get_cell_mut((
+                            col_index,
+                            (row_num + 2).try_into().expect("row columns shoud exist"),
+                        ))
                         .set_value(cell);
                     // if metadata.field_type[order] == "number" {
                     //     if let Ok(number) = cell.parse::<f64>() {
