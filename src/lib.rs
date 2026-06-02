@@ -2852,7 +2852,15 @@ fn value_convert(value: Value, describers: &mut [Describer], num: usize) -> Stri
         }
         Value::Number(number) => {
             describer.process_num(number.as_f64().unwrap_or(0_f64));
-            number.to_string()
+            // Integers keep their exact representation; floats are formatted the
+            // same way the YAJL streaming path does (`format!("{}", f64)`), so an
+            // integral float like `1.0` renders as `1` rather than `1.0`. This
+            // keeps the iterator/in-memory path consistent with the file path.
+            if number.is_f64() {
+                format!("{}", number.as_f64().unwrap_or(0_f64))
+            } else {
+                number.to_string()
+            }
         }
         Value::Bool(bool) => {
             let string = bool.to_string();
