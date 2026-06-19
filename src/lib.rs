@@ -76,8 +76,8 @@ mod postgresql;
 #[cfg(not(target_family = "wasm"))]
 mod schema_analysis;
 
-#[cfg(not(target_family = "wasm"))]
-mod yajlparser;
+pub mod fastvalue;
+
 
 #[cfg(not(target_family = "wasm"))]
 use std::convert::TryInto;
@@ -86,7 +86,7 @@ use std::io::BufRead;
 use std::{
     fmt,
     fs::{create_dir_all, remove_dir_all, File},
-    io::{BufReader, Read, Write},
+    io::{BufReader, Cursor, Read, Write},
     path::PathBuf,
     sync::atomic::{AtomicBool, Ordering},
 };
@@ -96,7 +96,7 @@ use std::{panic, thread};
 #[cfg(not(target_family = "wasm"))]
 use async_compression::tokio::bufread::GzipDecoder;
 #[cfg(not(target_family = "wasm"))]
-use crossbeam_channel::{bounded, Receiver, SendError, Sender};
+use crossbeam_channel::{bounded, unbounded, Receiver, SendError, Sender};
 use csv::{ByteRecord, Reader, ReaderBuilder, Writer, WriterBuilder};
 #[cfg(not(target_family = "wasm"))]
 use csv_async::{AsyncWriter, AsyncWriterBuilder};
@@ -112,7 +112,16 @@ use csvs_convert::{
 use csvs_convert::{Describer, DescriberOptions};
 use flate2::{write::GzEncoder, Compression};
 pub use guess_array::guess_array;
-use indexmap::{IndexMap as HashMap, IndexSet as Set};
+use indexmap::{IndexMap, IndexSet};
+use rustc_hash::FxBuildHasher;
+
+// Insertion-ordered maps/sets keyed by field and table names, with FxHash
+// instead of the default SipHash. Iteration order is insertion order either
+// way, so output (column/table order) is unchanged; FxHash just makes the
+// per-cell / per-row lookups cheaper. Construct with `::default()`, not
+// `::new()` (the latter is RandomState-only).
+type HashMap<K, V> = IndexMap<K, V, FxBuildHasher>;
+type Set<T> = IndexSet<T, FxBuildHasher>;
 use itertools::Itertools;
 use jsonpath_rust::JsonPath;
 use log::{info, warn};
@@ -127,7 +136,9 @@ use object_store::{ObjectStore, ObjectStoreExt};
 #[cfg(not(target_family = "wasm"))]
 use parquet::arrow::async_writer::AsyncArrowWriter;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Deserializer, Map, Value};
+use serde_json::{json, Deserializer, Value};
+
+use crate::fastvalue::{FastMap, FastValue};
 use smallvec::{smallvec, SmallVec};
 use smartstring::alias::String as SmartString;
 use snafu::{Backtrace, ResultExt, Snafu};
@@ -142,10 +153,6 @@ use tokio::sync::mpsc;
 use typed_builder::TypedBuilder;
 #[cfg(not(target_family = "wasm"))]
 use rust_xlsxwriter::Workbook;
-#[cfg(not(target_family = "wasm"))]
-use yajlish::Parser;
-#[cfg(not(target_family = "wasm"))]
-use yajlparser::Item;
 
 lazy_static::lazy_static! {
     pub static ref TERMINATE: AtomicBool = AtomicBool::new(false);
@@ -328,6 +335,39 @@ impl fmt::Display for PathItem {
     }
 }
 
+impl PathItem {
+    /// Append this item's text to `out` directly. Profiling showed the `fmt`
+    /// machinery behind `write!` dominating link-field construction, so the hot
+    /// path pushes bytes itself instead of going through `Display`.
+    fn push_to(&self, out: &mut String) {
+        match self {
+            PathItem::Key(key) => out.push_str(key),
+            PathItem::Index(index) => {
+                let mut buf = [0u8; 20];
+                let mut i = buf.len();
+                let mut n = *index;
+                loop {
+                    i -= 1;
+                    buf[i] = b'0' + (n % 10) as u8;
+                    n /= 10;
+                    if n == 0 {
+                        break;
+                    }
+                }
+                out.push_str(std::str::from_utf8(&buf[i..]).expect("digits are ascii"));
+            }
+        }
+    }
+
+    /// The number of bytes [`PathItem::push_to`] will append, for sizing buffers.
+    fn text_len(&self) -> usize {
+        match self {
+            PathItem::Key(key) => key.len(),
+            PathItem::Index(index) => index.checked_ilog10().unwrap_or(0) as usize + 1,
+        }
+    }
+}
+
 enum TmpCSVWriter {
     #[cfg(not(target_family = "wasm"))]
     Disk(csv::Writer<File>),
@@ -474,7 +514,8 @@ pub struct FlatFiles {
     row_number: usize,
     sub_array_row_number: usize,
     current_path: Vec<SmartString>,
-    table_rows: HashMap<String, Vec<Map<String, Value>>>,
+    table_rows: HashMap<String, Vec<FastMap>>,
+    table_name_cache: HashMap<SmallVec<[SmartString; 5]>, String>,
     tmp_csvs: HashMap<String, TmpCSVWriter>,
     table_metadata: HashMap<String, TableMetadata>,
     one_to_many_arrays: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
@@ -543,7 +584,7 @@ impl TableMetadata {
 
         TableMetadata {
             fields: vec![],
-            fields_set: Set::new(),
+            fields_set: Set::default(),
             field_counts: vec![],
             rows: 0,
             ignore: false,
@@ -679,17 +720,18 @@ impl FlatFiles {
             row_number: 0,
             sub_array_row_number: 0,
             current_path: vec![],
-            table_rows: HashMap::new(),
-            tmp_csvs: HashMap::new(),
-            table_metadata: HashMap::new(),
+            table_rows: HashMap::default(),
+            table_name_cache: HashMap::default(),
+            tmp_csvs: HashMap::default(),
+            table_metadata: HashMap::default(),
             one_to_many_arrays: SmallVec::new(),
             one_to_one_arrays: SmallVec::new(),
-            order_map: HashMap::new(),
-            field_titles_map: HashMap::new(),
-            table_order: HashMap::new(),
-            tmp_memory: HashMap::new(),
-            csv_memory_gz: HashMap::new(),
-            files_memory: HashMap::new(),
+            order_map: HashMap::default(),
+            field_titles_map: HashMap::default(),
+            table_order: HashMap::default(),
+            tmp_memory: HashMap::default(),
+            csv_memory_gz: HashMap::default(),
+            files_memory: HashMap::default(),
             direct,
             #[cfg(not(target_family = "wasm"))]
             object_store,
@@ -759,7 +801,7 @@ impl FlatFiles {
 
     fn handle_obj(
         &mut self,
-        mut obj: Map<String, Value>,
+        mut obj: FastMap,
         emit: bool,
         full_path: SmallVec<[PathItem; 10]>,
         no_index_path: SmallVec<[SmartString; 5]>,
@@ -767,8 +809,8 @@ impl FlatFiles {
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
         parent_one_to_one_key: bool,
         pushdown_keys: SmallVec<[String; 10]>,
-        pushdown_values: SmallVec<[Value; 10]>,
-    ) -> Option<Map<String, Value>> {
+        pushdown_values: SmallVec<[FastValue; 10]>,
+    ) -> Option<FastMap> {
         let mut table_name = String::new();
 
         if emit {
@@ -779,16 +821,22 @@ impl FlatFiles {
             }
         }
 
-        let mut to_insert: SmallVec<[(String, Value); 30]> = smallvec![];
-        let mut to_delete: SmallVec<[String; 30]> = smallvec![];
+        // Scratch lists live on the stack and get moved around with the frame, so
+        // keep the inline part small (profiling showed 30-entry inline buffers being
+        // memcpy'd wholesale); larger objects spill to the heap, which is cheaper.
+        let mut to_insert: SmallVec<[(SmartString, FastValue); 8]> = smallvec![];
+        let mut to_delete: SmallVec<[SmartString; 8]> = smallvec![];
 
-        let mut one_to_one_array: SmallVec<[(String, Value); 30]> = smallvec![];
+        let mut one_to_one_array: SmallVec<[(SmartString, FastValue); 8]> = smallvec![];
 
         let mut new_pushdown_keys = pushdown_keys.clone();
         let mut new_pushdown_values = pushdown_values.clone();
 
-        for key in self.options.pushdown.iter() {
-            if let Some(value) = obj.get(key) {
+        // indexed loop (cloning the key) so set_table_name can borrow self mutably;
+        // pushdown is rarely configured, so the clone is almost never reached
+        for key_index in 0..self.options.pushdown.len() {
+            let key = self.options.pushdown[key_index].clone();
+            if let Some(value) = obj.get(&key) {
                 if table_name.is_empty() {
                     self.set_table_name(&mut table_name, &no_index_path);
                 }
@@ -796,7 +844,7 @@ impl FlatFiles {
                     [
                         table_name.clone(),
                         self.options.path_separator.clone(),
-                        key.clone(),
+                        key,
                     ]
                     .concat(),
                 );
@@ -831,7 +879,7 @@ impl FlatFiles {
                     }
                     let values = String::from_utf8_lossy(&csv_bytes);
                     let trimmed = values.trim();
-                    let trimmed_value = json!(trimmed);
+                    let trimmed_value = FastValue::from(trimmed);
                     to_insert.push((key.clone(), trimmed_value))
                 } else if obj_count == arr_length || self.options.arrays_new_table {
                     to_delete.push(key.clone());
@@ -840,14 +888,14 @@ impl FlatFiles {
                     for (i, array_value) in my_array.iter_mut().enumerate() {
                         let my_value = array_value.take();
                         let mut new_full_path = full_path.clone();
-                        new_full_path.push(PathItem::Key(SmartString::from(key)));
+                        new_full_path.push(PathItem::Key(key.clone()));
                         new_full_path.push(PathItem::Index(i));
 
                         let mut new_one_to_many_full_paths = one_to_many_full_paths.clone();
                         new_one_to_many_full_paths.push(new_full_path.clone());
 
                         let mut new_no_index_path = no_index_path.clone();
-                        new_no_index_path.push(SmartString::from(key));
+                        new_no_index_path.push(key.clone());
 
                         let mut new_one_to_many_no_index_paths = one_to_many_no_index_paths.clone();
                         new_one_to_many_no_index_paths.push(new_no_index_path.clone());
@@ -870,7 +918,7 @@ impl FlatFiles {
                             continue;
                         }
 
-                        if let Value::Object(my_obj) = my_value {
+                        if let FastValue::Object(my_obj) = my_value {
                             if !my_obj.is_empty() {
                                 self.handle_obj(
                                     my_obj,
@@ -888,15 +936,12 @@ impl FlatFiles {
                         }
 
                         if self.options.arrays_new_table {
-                            let value_value = match my_value {
-                                Value::String(s) => s,
-                                _ => {
-                                    format!("{}", my_value)
-                                }
+                            let json_value = match my_value {
+                                FastValue::String(s) => FastValue::String(s),
+                                _ => FastValue::from(format!("{}", my_value)),
                             };
-                            let json_value = json!(value_value);
-                            let mut my_obj = Map::new();
-                            my_obj.insert("value".to_string(), json_value);
+                            let mut my_obj = FastMap::new();
+                            my_obj.insert("value", json_value);
                             self.handle_obj(
                                 my_obj,
                                 true,
@@ -911,7 +956,7 @@ impl FlatFiles {
                         }
                     }
                 } else {
-                    let json_value = json!(format!("{}", value));
+                    let json_value = FastValue::from(format!("{}", value));
                     to_insert.push((key.clone(), json_value));
                 }
             }
@@ -919,7 +964,7 @@ impl FlatFiles {
 
         let mut one_to_one_array_keys = vec![];
 
-        for (key, value) in one_to_one_array {
+        for (key, value) in one_to_one_array.drain(..) {
             one_to_one_array_keys.push(key.clone());
             obj.insert(key, value);
         }
@@ -930,9 +975,9 @@ impl FlatFiles {
                 to_delete.push(key.clone());
 
                 let mut new_full_path = full_path.clone();
-                new_full_path.push(PathItem::Key(SmartString::from(key)));
+                new_full_path.push(PathItem::Key(key.clone()));
                 let mut new_no_index_path = no_index_path.clone();
-                new_no_index_path.push(SmartString::from(key));
+                new_no_index_path.push(key.clone());
 
                 let mut emit_child = false;
                 if self
@@ -942,7 +987,7 @@ impl FlatFiles {
                 {
                     emit_child = true;
                 }
-                if let Value::Object(my_value) = my_value {
+                if let FastValue::Object(my_value) = my_value {
                     let new_obj = self.handle_obj(
                         my_value,
                         emit_child,
@@ -961,16 +1006,16 @@ impl FlatFiles {
                             object_key.push_str(&self.options.path_separator);
                             object_key.push_str(new_key);
 
-                            to_insert.push((object_key, new_value.take()));
+                            to_insert.push((object_key.into(), new_value.take()));
                         }
                     }
                 }
             }
         }
-        for key in to_delete {
+        for key in to_delete.drain(..) {
             obj.remove(&key);
         }
-        for (key, value) in to_insert {
+        for (key, value) in to_insert.drain(..) {
             obj.insert(key, value);
         }
 
@@ -992,7 +1037,12 @@ impl FlatFiles {
         }
     }
 
-    fn set_table_name(&self, table_name: &mut String, no_index_path: &SmallVec<[SmartString; 5]>) {
+    fn set_table_name(&mut self, table_name: &mut String, no_index_path: &SmallVec<[SmartString; 5]>) {
+        // The same path maps to the same table name for every record; build it once.
+        if let Some(cached) = self.table_name_cache.get(no_index_path) {
+            table_name.clone_from(cached);
+            return;
+        }
         *table_name = [
             self.options.table_prefix.clone(),
             no_index_path.join(&self.options.path_separator),
@@ -1001,11 +1051,13 @@ impl FlatFiles {
         if no_index_path.is_empty() {
             *table_name = self.main_table_name.clone();
         }
+        self.table_name_cache
+            .insert(no_index_path.clone(), table_name.clone());
     }
 
     fn process_obj(
         &mut self,
-        mut obj: Map<String, Value>,
+        mut obj: FastMap,
         table_name: String,
         one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
         one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
@@ -1028,88 +1080,76 @@ impl FlatFiles {
         one_to_many_no_index_paths: SmallVec<
             [SmallVec<[smartstring::SmartString<smartstring::LazyCompact>; 5]>; 5],
         >,
-        obj: &mut Map<String, Value>,
+        obj: &mut FastMap,
         table_name: &String,
     ) {
+        // The row number is the same for every link field on this row; compute its
+        // string form once instead of re-allocating it per field.
+        let row_str = self.row_number.to_string();
+        let id_prefix = self.options.id_prefix.as_str();
+
+        // Builds "{id_prefix}{row_str}" optionally followed by ".{full path joined by '.'}".
+        // Sized exactly up front: profiling showed deep paths overflowing a guessed
+        // capacity and reallocating mid-build.
+        let link_value = |full: Option<&SmallVec<[PathItem; 10]>>| -> FastValue {
+            let mut capacity = id_prefix.len() + row_str.len();
+            if let Some(full) = full {
+                for item in full.iter() {
+                    capacity += 1 + item.text_len();
+                }
+            }
+            let mut s = String::with_capacity(capacity);
+            s.push_str(id_prefix);
+            s.push_str(&row_str);
+            if let Some(full) = full {
+                for item in full.iter() {
+                    s.push('.');
+                    item.push_to(&mut s);
+                }
+            }
+            FastValue::from(s)
+        };
+
         let mut path_iter = one_to_many_full_paths
             .iter()
-            .zip(one_to_many_no_index_paths)
+            .zip(one_to_many_no_index_paths.iter())
             .peekable();
 
         if one_to_many_full_paths.is_empty() {
-            obj.insert(
-                String::from("_link"),
-                Value::String(
-                    [
-                        self.options.id_prefix.to_owned(),
-                        self.row_number.to_string(),
-                    ]
-                    .concat(),
-                ),
-            );
+            obj.insert(String::from("_link"), link_value(None));
         } else {
             obj.insert(
                 String::from("_link"),
-                Value::String(
-                    [
-                        self.options.id_prefix.to_owned(),
-                        self.row_number.to_string(),
-                        ".".to_string(),
-                        one_to_many_full_paths[one_to_many_full_paths.len() - 1]
-                            .iter()
-                            .join("."),
-                    ]
-                    .concat(),
-                ),
+                link_value(Some(&one_to_many_full_paths[one_to_many_full_paths.len() - 1])),
             );
         }
 
         while let Some((full, no_index)) = path_iter.next() {
             if path_iter.peek().is_some() {
-                obj.insert(
-                    [
-                        "_link_".to_string(),
-                        self.options.table_prefix.clone(),
-                        no_index.iter().join(&self.options.path_separator),
-                    ]
-                    .concat(),
-                    Value::String(
-                        [
-                            self.options.id_prefix.to_owned(),
-                            self.row_number.to_string(),
-                            ".".to_string(),
-                            full.iter().join("."),
-                        ]
-                        .concat(),
-                    ),
+                // key: "_link_{table_prefix}{no_index joined by path_separator}"
+                let sep = self.options.path_separator.as_str();
+                let mut key = String::with_capacity(
+                    6 + self.options.table_prefix.len() + no_index.len() * 8,
                 );
+                key.push_str("_link_");
+                key.push_str(&self.options.table_prefix);
+                for (i, item) in no_index.iter().enumerate() {
+                    if i > 0 {
+                        key.push_str(sep);
+                    }
+                    key.push_str(item);
+                }
+                obj.insert(key, link_value(Some(full)));
             } else {
-                obj.insert(
-                    String::from("_link"),
-                    Value::String(
-                        [
-                            self.options.id_prefix.to_owned(),
-                            self.row_number.to_string(),
-                            ".".to_string(),
-                            full.iter().join("."),
-                        ]
-                        .concat(),
-                    ),
-                );
+                obj.insert(String::from("_link"), link_value(Some(full)));
             }
         }
 
         if *table_name != self.main_table_name {
-            obj.insert(
-                ["_link_", &self.main_table_name].concat(),
-                Value::String(
-                    [
-                        self.options.id_prefix.to_owned(),
-                        self.row_number.to_string(),
-                    ]
-                    .concat(),
-                ),
-            );
+            let mut key = String::with_capacity(6 + self.main_table_name.len());
+            key.push_str("_link_");
+            key.push_str(&self.main_table_name);
+            obj.insert(key, link_value(None));
         };
     }
 
@@ -1214,9 +1254,9 @@ impl FlatFiles {
                     }
                 }
                 for (key, value) in row {
-                    if !table_metadata.fields_set.contains(key) && !self.options.only_fields {
-                        table_metadata.fields.push(key.clone());
-                        table_metadata.fields_set.insert(key.clone());
+                    if !table_metadata.fields_set.contains(key.as_str()) && !self.options.only_fields {
+                        table_metadata.fields.push(key.to_string());
+                        table_metadata.fields_set.insert(key.to_string());
                         table_metadata.field_counts.push(1);
                         table_metadata.ignore_fields.push(false);
                         let force_string = self.options.all_strings || (!self.options.no_link && key.starts_with("_link"));
@@ -1234,7 +1274,7 @@ impl FlatFiles {
                         if let Some(title) = self.field_titles_map.get(&full_path) {
                             table_metadata.field_titles.push(title.clone());
                         } else {
-                            table_metadata.field_titles.push(key.clone());
+                            table_metadata.field_titles.push(key.to_string());
                         }
 
                         output_row.push(value_convert(
@@ -1289,9 +1329,9 @@ impl FlatFiles {
                             }
                             let value = value_option.expect("checked above");
                             match value {
-                                Value::Null => b.push(None),
-                                Value::Bool(bool) => b.push(Some(*bool)),
-                                Value::String(str) => match str.parse::<bool>() {
+                                FastValue::Null => b.push(None),
+                                FastValue::Bool(bool) => b.push(Some(*bool)),
+                                FastValue::String(str) => match str.parse::<bool>() {
                                     Ok(bool) => b.push(Some(bool)),
                                     Err(_) => {
                                         return Err(Error::FlattererProcessError {
@@ -1317,15 +1357,17 @@ impl FlatFiles {
                             }
                             let value = value_option.expect("checked above");
                             match value {
-                                Value::Null => integer.push(None),
-                                Value::Number(num) => integer.push(Some(num.as_i64().ok_or(
-                                    Error::FlattererProcessError {
-                                        message: format!(
-                                            "Unable to parse {num} as integer in field {field}"
-                                        ),
-                                    },
-                                )?)),
-                                Value::String(str) => match str.parse::<i64>() {
+                                FastValue::Null => integer.push(None),
+                                FastValue::Int(_) | FastValue::UInt(_) | FastValue::Float(_) => {
+                                    integer.push(Some(value.as_i64().ok_or(
+                                        Error::FlattererProcessError {
+                                            message: format!(
+                                                "Unable to parse {value} as integer in field {field}"
+                                            ),
+                                        },
+                                    )?))
+                                }
+                                FastValue::String(str) => match str.parse::<i64>() {
                                     Ok(parsed) => integer.push(Some(parsed)),
                                     Err(_) => {
                                         return Err(Error::FlattererProcessError {
@@ -1351,8 +1393,8 @@ impl FlatFiles {
                             }
                             let value = value_option.expect("checked above");
                             match value {
-                                Value::Null => string.push(None),
-                                Value::String(str) => string.push(Some(str.to_string())),
+                                FastValue::Null => string.push(None),
+                                FastValue::String(str) => string.push(Some(str.to_string())),
                                 val => string.push(Some(val.to_string())),
                             }
                         }
@@ -1363,15 +1405,17 @@ impl FlatFiles {
                             }
                             let value = value_option.expect("checked above");
                             match value {
-                                Value::Null => number.push(None),
-                                Value::String(str) => number.push(Some(str.parse().unwrap())),
-                                Value::Number(num) => number.push(Some(num.as_f64().ok_or(
-                                    Error::FlattererProcessError {
-                                        message: format!(
-                                            "Unable to parse {num} as float in field {field}"
-                                        ),
-                                    },
-                                )?)),
+                                FastValue::Null => number.push(None),
+                                FastValue::String(str) => number.push(Some(str.parse().unwrap())),
+                                FastValue::Int(_) | FastValue::UInt(_) | FastValue::Float(_) => {
+                                    number.push(Some(value.as_f64().ok_or(
+                                        Error::FlattererProcessError {
+                                            message: format!(
+                                                "Unable to parse {value} as float in field {field}"
+                                            ),
+                                        },
+                                    )?))
+                                }
                                 _ => {
                                     return Err(Error::FlattererProcessError {
                                         message: format!(
@@ -1527,9 +1571,9 @@ impl FlatFiles {
                     }
                 }
                 for (key, value) in row {
-                    if !table_metadata.fields_set.contains(key) && !self.options.only_fields {
-                        table_metadata.fields.push(key.clone());
-                        table_metadata.fields_set.insert(key.clone());
+                    if !table_metadata.fields_set.contains(key.as_str()) && !self.options.only_fields {
+                        table_metadata.fields.push(key.to_string());
+                        table_metadata.fields_set.insert(key.to_string());
                         table_metadata.field_counts.push(1);
                         table_metadata.ignore_fields.push(false);
                         let options = DescriberOptions::builder()
@@ -1545,7 +1589,7 @@ impl FlatFiles {
                         if let Some(title) = self.field_titles_map.get(&full_path) {
                             table_metadata.field_titles.push(title.clone());
                         } else {
-                            table_metadata.field_titles.push(key.clone());
+                            table_metadata.field_titles.push(key.to_string());
                         }
 
                         output_row.push(value_convert(
@@ -1582,16 +1626,39 @@ impl FlatFiles {
         Ok(())
     }
 
+    /// Compatibility entry point taking a `serde_json::Value`; the hot paths parse
+    /// straight into a [`FastValue`] and use [`FlatFiles::process_fast_value`].
     pub fn process_value(&mut self, value: Value, initial_path: Vec<SmartString>) {
-        if let Some(json_path) = self.json_path.as_ref() {
-            let wrapped = Value::Array(vec![value.clone()]);
-            match wrapped.query(json_path) {
-                Ok(output) if !output.is_empty() => {}
-                _ => return,
-            }
+        if !self.json_path_matches(&value) {
+            return;
         }
+        self.process_fast_inner(FastValue::from(value), initial_path)
+    }
 
-        if let Value::Object(obj) = value {
+    pub fn process_fast_value(&mut self, value: FastValue, initial_path: Vec<SmartString>) {
+        if self.json_path.is_some() {
+            // jsonpath-rust only evaluates serde_json::Value; this path already clones
+            // the whole value per record today, so the round-trip conversion is no worse.
+            let value: Value = value.into();
+            if !self.json_path_matches(&value) {
+                return;
+            }
+            self.process_fast_inner(FastValue::from(value), initial_path)
+        } else {
+            self.process_fast_inner(value, initial_path)
+        }
+    }
+
+    fn json_path_matches(&self, value: &Value) -> bool {
+        let Some(json_path) = self.json_path.as_ref() else {
+            return true;
+        };
+        let wrapped = Value::Array(vec![value.clone()]);
+        matches!(wrapped.query(json_path), Ok(output) if !output.is_empty())
+    }
+
+    fn process_fast_inner(&mut self, value: FastValue, initial_path: Vec<SmartString>) {
+        if let FastValue::Object(obj) = value {
             let has_path = !initial_path.is_empty();
             if initial_path != self.current_path {
                 self.sub_array_row_number = 0;
@@ -1785,7 +1852,7 @@ impl FlatFiles {
 
     pub fn make_lower_case_titles(&mut self) {
         for metadata in self.table_metadata.values_mut() {
-            let mut existing_fields = Set::new();
+            let mut existing_fields = Set::default();
             for field in metadata.field_titles.iter() {
                 let mut lowered = field.to_lowercase().trim().to_owned();
                 lowered = INVALID_REGEX.replace_all(&lowered, "").to_string();
@@ -2838,41 +2905,45 @@ impl FlatFiles {
     }
 }
 
-fn value_convert(value: Value, describers: &mut [Describer], num: usize) -> String {
+fn value_convert(value: FastValue, describers: &mut [Describer], num: usize) -> String {
     let describer = &mut describers[num];
 
     match value {
-        Value::String(val) => {
+        FastValue::String(val) => {
             describer.process(&val);
-            val
+            val.into()
         }
-        Value::Null => {
+        FastValue::Null => {
             describer.process("");
             "".to_string()
         }
-        Value::Number(number) => {
-            describer.process_num(number.as_f64().unwrap_or(0_f64));
-            // Integers keep their exact representation; floats are formatted the
-            // same way the YAJL streaming path does (`format!("{}", f64)`), so an
-            // integral float like `1.0` renders as `1` rather than `1.0`. This
-            // keeps the iterator/in-memory path consistent with the file path.
-            if number.is_f64() {
-                format!("{}", number.as_f64().unwrap_or(0_f64))
-            } else {
-                number.to_string()
-            }
+        // Integers keep their exact representation; floats are formatted the same way
+        // the YAJL streaming path does (`format!("{}", f64)`), so an integral float
+        // like `1.0` renders as `1` rather than `1.0`. This keeps the
+        // iterator/in-memory path consistent with the file path.
+        FastValue::Int(i) => {
+            describer.process_num(i as f64);
+            i.to_string()
         }
-        Value::Bool(bool) => {
+        FastValue::UInt(u) => {
+            describer.process_num(u as f64);
+            u.to_string()
+        }
+        FastValue::Float(f) => {
+            describer.process_num(f);
+            format!("{}", f)
+        }
+        FastValue::Bool(bool) => {
             let string = bool.to_string();
             describer.process(&string);
             string
         }
-        Value::Array(_) => {
+        FastValue::Array(_) => {
             let string = value.to_string();
             describer.process(&string);
             string
         }
-        Value::Object(_) => {
+        FastValue::Object(_) => {
             let string = value.to_string();
             describer.process(&string);
             string
@@ -3324,7 +3395,7 @@ pub fn flatten_single(input: String, mut flat_files: FlatFiles) -> Result<FlatFi
     } else {
         1000
     };
-    let (item_sender, item_receiver): (Sender<Item>, Receiver<yajlparser::Item>) =
+    let (item_sender, item_receiver): (Sender<Item>, Receiver<Item>) =
         bounded(channel_size);
 
     let (stop_sender, stop_receiver) = bounded(1);
@@ -3411,7 +3482,7 @@ async fn item_reciever(
             });
         }
 
-        let value: Value = serde_result.context(SerdeReadSnafu {})?;
+        let value: FastValue = serde_result.context(SerdeReadSnafu {})?;
 
         if !value.is_object() {
             return Err(Error::FlattererProcessError {
@@ -3429,7 +3500,7 @@ async fn item_reciever(
             initial_path = item.path.clone()
         }
 
-        flat_files.process_value(value, initial_path);
+        flat_files.process_fast_value(value, initial_path);
         if flat_files.options.s3 {
             if flat_files.options.parquet {
                 if count % 100 == 0 {
@@ -3525,7 +3596,7 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
         1000
     };
 
-    let (item_sender, item_receiver_initial): (Sender<Item>, Receiver<yajlparser::Item>) =
+    let (item_sender, item_receiver_initial): (Sender<Item>, Receiver<Item>) =
         bounded(channel_size);
 
     let mut stop_senders = vec![];
@@ -3581,7 +3652,7 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
                     });
                 }
 
-                let value: Value = serde_result.context(SerdeReadSnafu {})?;
+                let value: FastValue = serde_result.context(SerdeReadSnafu {})?;
 
                 if !value.is_object() {
                     return Err(Error::FlattererProcessError {
@@ -3597,7 +3668,7 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
                     initial_path = item.path.clone()
                 }
 
-                flat_files.process_value(value, initial_path);
+                flat_files.process_fast_value(value, initial_path);
                 flat_files.create_rows()?;
                 count += 1;
                 if count % 500000 == 0 {
@@ -3759,7 +3830,16 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
     Ok(())
 }
 
-#[cfg(not(target_family = "wasm"))]
+/// One record handed from the producer to a worker: its JSON text and the
+/// key-path it came from (empty for a top-level/ndjson record; the array's path
+/// for a nested array element). The worker parses `json` and, when `--path` is
+/// set, keeps only items whose `path` matches.
+#[derive(Debug)]
+pub struct Item {
+    pub json: String,
+    pub path: Vec<SmartString>,
+}
+
 fn send_json_items(
     options: &Options,
     mut input: Box<dyn BufRead>,
@@ -3767,8 +3847,6 @@ fn send_json_items(
     stop_senders: Vec<Sender<()>>,
     final_output_path: Option<&PathBuf>,
 ) -> Result<(), Error> {
-    let mut outer: Vec<u8> = vec![];
-    let top_level_type;
     if options.ndjson {
         for line in input.lines() {
             item_sender
@@ -3778,83 +3856,496 @@ fn send_json_items(
                 })
                 .context(ChannelItemSnafu {})?;
         }
-    } else {
-        {
-            let mut handler = yajlparser::ParseJson::new(
-                &mut outer,
-                Some(item_sender.clone()),
-                None,
-                options.json_stream,
-                500 * 1024 * 1024,
-            );
+        return Ok(());
+    }
 
-            {
-                let mut parser = Parser::new(&mut handler);
+    // Serde producer for every non-ndjson shape; each record's raw bytes go
+    // straight to the workers (which re-parse), no tokenize + reserialize. The
+    // worker filters items by --path, so combining --path with json-stream or a
+    // top-level array yields nothing (or "not an array of objects"), exactly as
+    // the old YAJL front-end did — those records are tagged with the empty path.
+    let first = peek_first_nonws(&mut input)?;
+    if options.json_stream {
+        // concatenated top-level values
+        return send_serde_stream(input, &item_sender, stop_senders, final_output_path);
+    }
+    if first == Some(b'[') {
+        // top-level array of objects
+        return send_serde_array(input, &item_sender, stop_senders, final_output_path);
+    }
+    if first == Some(b'{') && !options.path.is_empty() {
+        // explicit --path into a wrapped object: navigate then stream the array
+        let smart_path = options.path.iter().map(SmartString::from).collect();
+        return send_serde_path(input, smart_path, &item_sender, stop_senders, final_output_path);
+    }
+    // wrapped object whose nested arrays-of-objects each become a table, or a
+    // top-level scalar (handled as "not an array of objects")
+    send_serde_wrapped(input, &item_sender, stop_senders, final_output_path)
+}
 
-                if let Err(error) = parser.parse(&mut input) {
-                    log::debug!("Parse error, whilst in main parsing");
-                    for stop_sender in stop_senders {
-                        stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-                    }
-                    if let Some(final_output_path) = final_output_path {
-                        remove_dir_all(final_output_path).context(FlattererRemoveDirSnafu {
-                            filename: final_output_path.to_string_lossy(),
-                        })?;
-                    }
-                    return Err(Error::YAJLishParseError {
-                        error: format!("Invalid JSON due to the following error: {}", error),
-                    });
+/// First non-whitespace byte of the input, consuming any leading whitespace
+/// (which JSON ignores). Lets the producer tell a top-level array (`[`) from a
+/// wrapped object (`{`) or scalar without committing to a full parse.
+fn peek_first_nonws(input: &mut Box<dyn BufRead>) -> Result<Option<u8>, Error> {
+    loop {
+        let buf = input
+            .fill_buf()
+            .context(FlattererReadSnafu { filepath: "input" })?;
+        if buf.is_empty() {
+            return Ok(None);
+        }
+        if let Some(pos) = buf.iter().position(|b| !b.is_ascii_whitespace()) {
+            return Ok(Some(buf[pos]));
+        }
+        let len = buf.len();
+        input.consume(len);
+    }
+}
+
+/// Signal the workers to stop and clean up partial output, then report a parse
+/// error in the same form as the YAJL path (so the error-text contract holds).
+fn serde_producer_error<T>(
+    error: impl std::fmt::Display,
+    stop_senders: &[Sender<()>],
+    final_output_path: Option<&PathBuf>,
+) -> Result<T, Error> {
+    for stop_sender in stop_senders {
+        stop_sender.send(()).context(ChannelStopSendSnafu {})?;
+    }
+    if let Some(final_output_path) = final_output_path {
+        remove_dir_all(final_output_path).context(FlattererRemoveDirSnafu {
+            filename: final_output_path.to_string_lossy(),
+        })?;
+    }
+    Err(Error::YAJLishParseError {
+        error: format!("Invalid JSON due to the following error: {}", error),
+    })
+}
+
+/// True when a jiter error means "the buffer ended mid-structure, read more"
+/// rather than a syntax error. On valid input this only fires at the buffer
+/// end; on malformed input the scout still terminates via the exhausted-reader
+/// path below (at the cost of reading to EOF first — acceptable, malformed
+/// input is rare).
+fn jiter_needs_more(error: &jiter::JiterError) -> bool {
+    use jiter::{JiterErrorType, JsonErrorType};
+    matches!(
+        error.error_type,
+        JiterErrorType::JsonError(
+            JsonErrorType::EofWhileParsingList
+                | JsonErrorType::EofWhileParsingObject
+                | JsonErrorType::EofWhileParsingString
+                | JsonErrorType::EofWhileParsingValue
+                | JsonErrorType::ExpectedListCommaOrEnd
+                | JsonErrorType::ExpectedObjectCommaOrEnd
+        )
+    )
+}
+
+/// Append up to `chunk` more bytes from `input` to `buf`; returns how many were
+/// read (0 at EOF).
+fn read_chunk(input: &mut Box<dyn BufRead>, buf: &mut Vec<u8>, chunk: usize) -> Result<usize, Error> {
+    let before = buf.len();
+    buf.resize(before + chunk, 0);
+    let mut filled = before;
+    while filled < before + chunk {
+        let n = input
+            .read(&mut buf[filled..])
+            .context(FlattererReadSnafu { filepath: "input" })?;
+        if n == 0 {
+            break;
+        }
+        filled += n;
+    }
+    buf.truncate(filled);
+    Ok(filled - before)
+}
+
+const ARRAY_CHUNK: usize = 256 * 1024;
+
+struct ArrayRemainder {
+    tail: Vec<u8>,
+    input: Box<dyn BufRead>,
+}
+
+fn reject_non_ws_tail(
+    mut remainder: ArrayRemainder,
+    stop_senders: &[Sender<()>],
+    final_output_path: Option<&PathBuf>,
+) -> Result<(), Error> {
+    if remainder.tail.iter().any(|b| !b.is_ascii_whitespace()) {
+        return serde_producer_error("trailing characters", stop_senders, final_output_path);
+    }
+
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = remainder
+            .input
+            .read(&mut buf)
+            .context(FlattererReadSnafu { filepath: "input" })?;
+        if n == 0 {
+            return Ok(());
+        }
+        if buf[..n].iter().any(|b| !b.is_ascii_whitespace()) {
+            return serde_producer_error("trailing characters", stop_senders, final_output_path);
+        }
+    }
+}
+
+fn validate_wrapped_path_remainder(
+    prefix: Vec<u8>,
+    remainder: ArrayRemainder,
+    stop_senders: &[Sender<()>],
+    final_output_path: Option<&PathBuf>,
+) -> Result<(), Error> {
+    let validation_reader = Cursor::new(prefix)
+        .chain(Cursor::new(&b"[]"[..]))
+        .chain(Cursor::new(remainder.tail))
+        .chain(remainder.input);
+
+    match serde_json::from_reader::<_, serde::de::IgnoredAny>(validation_reader) {
+        Ok(_) => Ok(()),
+        Err(error) => serde_producer_error(error, stop_senders, final_output_path),
+    }
+}
+
+/// Stream the elements of a JSON array whose opening `[` is at the front of
+/// `buf`, sending each element's bytes tagged with `path` (empty for a
+/// top-level array; the configured path for `--path`). jiter finds each
+/// element's bounds in the buffer; the buffer holds only one chunk + the
+/// in-flight element — after a refill we keep from the start of the element
+/// that did not complete, prepend a synthetic `[` to re-establish array
+/// context, append the next chunk and re-parse. Bounded memory, no whole-file
+/// read.
+fn scout_array_chunks(
+    mut buf: Vec<u8>,
+    mut input: Box<dyn BufRead>,
+    path: &[SmartString],
+    item_sender: &Sender<Item>,
+    stop_senders: &[Sender<()>],
+    final_output_path: Option<&PathBuf>,
+) -> Result<ArrayRemainder, Error> {
+    let mut seen_object = false;
+    let mut exhausted = false;
+
+    loop {
+        let mut jiter = jiter::Jiter::new(&buf);
+        let mut refill_from: Option<usize> = None;
+        let mut tail_start: Option<usize> = None;
+
+        match jiter.next_array() {
+            Ok(first) => {
+                let mut have = first.is_some();
+                if first.is_none() {
+                    tail_start = Some(jiter.current_index());
                 }
-                if let Err(error) = parser.finish_parse() {
-                    // never seems to reach parse complete on stream data
-                    if !error
-                        .to_string()
-                        .contains("Did not reach a ParseComplete status")
-                    {
-                        log::debug!("Parse error, whilst in cleaning up parsing");
-                        //stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-                        if let Some(final_output_path) = final_output_path {
-                            remove_dir_all(final_output_path).context(FlattererRemoveDirSnafu {
-                                filename: final_output_path.to_string_lossy(),
-                            })?;
+                while have {
+                    let start = jiter.current_index();
+                    match jiter.next_skip() {
+                        Ok(()) => {
+                            let end = jiter.current_index();
+                            match jiter.array_step() {
+                                Ok(next) => {
+                                    // element value + its separator both complete.
+                                    // Match YAJL's "array is a stream of objects":
+                                    // scalars before the first object are ignored
+                                    // (all-scalar array -> "not an array of
+                                    // objects"); scalars once streaming are sent so
+                                    // the worker reports them as a non-object at
+                                    // their position (`[{...}, 1]`).
+                                    let elem = &buf[start..end];
+                                    let is_object = elem
+                                        .iter()
+                                        .find(|b| !b.is_ascii_whitespace())
+                                        .is_some_and(|b| *b == b'{');
+                                    if is_object {
+                                        seen_object = true;
+                                    }
+                                    if seen_object {
+                                        match std::str::from_utf8(elem) {
+                                            Ok(s) => item_sender
+                                                .send(Item {
+                                                    json: s.to_owned(),
+                                                    path: path.to_vec(),
+                                                })
+                                                .context(ChannelItemSnafu {})?,
+                                            Err(e) => {
+                                                return serde_producer_error(
+                                                    e,
+                                                    stop_senders,
+                                                    final_output_path,
+                                                )
+                                            }
+                                        }
+                                    }
+                                    have = next.is_some();
+                                    if next.is_none() {
+                                        tail_start = Some(jiter.current_index());
+                                    }
+                                }
+                                Err(e) if jiter_needs_more(&e) => {
+                                    refill_from = Some(start);
+                                    break;
+                                }
+                                Err(e) => {
+                                    return serde_producer_error(e, stop_senders, final_output_path)
+                                }
+                            }
                         }
-                        return Err(Error::YAJLishParseError {
-                            error: format!("Invalid JSON due to the following error: {}", error),
-                        });
+                        Err(e) if jiter_needs_more(&e) => {
+                            refill_from = Some(start);
+                            break;
+                        }
+                        Err(e) => return serde_producer_error(e, stop_senders, final_output_path),
                     }
                 }
             }
-
-            top_level_type = handler.top_level_type.clone();
-
-            if !handler.error.is_empty() {
-                if let Some(final_output_path) = final_output_path {
-                    remove_dir_all(final_output_path).context(FlattererRemoveDirSnafu {
-                        filename: final_output_path.to_string_lossy(),
-                    })?;
-                }
-                return Err(Error::FlattererProcessError {
-                    message: handler.error,
-                });
-            }
+            Err(ref e) if jiter_needs_more(e) => refill_from = Some(0),
+            Err(e) => return serde_producer_error(e, stop_senders, final_output_path),
         }
 
-        if top_level_type == "object" && !options.json_stream {
-            let item = Item {
-                json: std::str::from_utf8(&outer)
-                    .expect("utf8 should be checked by yajl")
-                    .to_string(),
-                path: vec![],
-            };
-            item_sender.send(item).context(ChannelItemSnafu {})?;
+        if let Some(tail_start) = tail_start {
+            return Ok(ArrayRemainder {
+                tail: buf[tail_start..].to_vec(),
+                input,
+            });
+        }
+
+        let from = refill_from.unwrap_or(0);
+        let mut next_buf = Vec::with_capacity(buf.len() - from + ARRAY_CHUNK + 1);
+        next_buf.push(b'[');
+        next_buf.extend_from_slice(&buf[from..]);
+        let got = read_chunk(&mut input, &mut next_buf, ARRAY_CHUNK)?;
+        if got == 0 {
+            if exhausted {
+                // needed more but the input is finished -> truncated
+                return serde_producer_error(
+                    "unexpected end of input",
+                    stop_senders,
+                    final_output_path,
+                );
+            }
+            exhausted = true;
+        }
+        buf = next_buf;
+    }
+}
+
+/// Stream a top-level array of objects (no `--path`).
+fn send_serde_array(
+    mut input: Box<dyn BufRead>,
+    item_sender: &Sender<Item>,
+    stop_senders: Vec<Sender<()>>,
+    final_output_path: Option<&PathBuf>,
+) -> Result<(), Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    read_chunk(&mut input, &mut buf, ARRAY_CHUNK)?;
+    let remainder = scout_array_chunks(
+        buf,
+        input,
+        &[],
+        item_sender,
+        &stop_senders,
+        final_output_path,
+    )?;
+    reject_non_ws_tail(remainder, &stop_senders, final_output_path)
+}
+
+/// Navigate a wrapped object to the array at `path`, returning the byte offset
+/// of its opening `[` within `buf`. `Ok(None)` means a key on the path is
+/// absent or its value is not an array (-> stream nothing, like YAJL's filter
+/// matching no array). A jiter error is returned for the caller to classify as
+/// "needs more bytes" (refill) or a real parse error.
+fn navigate_to_array(
+    buf: &[u8],
+    path: &[SmartString],
+) -> Result<Option<usize>, jiter::JiterError> {
+    let mut jiter = jiter::Jiter::new(buf);
+    for (depth, segment) in path.iter().enumerate() {
+        let mut key = jiter.next_object()?;
+        loop {
+            match key {
+                None => return Ok(None), // key not present in this object
+                Some(k) if k == segment.as_str() => {
+                    if depth + 1 == path.len() {
+                        // last segment: its value must be the target array
+                        return match jiter.peek()? {
+                            jiter::Peek::Array => Ok(Some(jiter.current_index())),
+                            _ => Ok(None),
+                        };
+                    }
+                    // intermediate segment: descend into the object value; the
+                    // next iteration's next_object() enters it.
+                    break;
+                }
+                Some(_) => {
+                    jiter.next_skip()?;
+                    key = jiter.next_key()?;
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Explicit `--path`: navigate a wrapped object to the array at `path`, then
+/// stream its elements (tagged with `path` so the worker keeps them). The
+/// wrapper prefix up to the array is held in the buffer while navigating, so
+/// `--path` is bounded by the size of that prefix plus a chunk (typically tiny
+/// for OCDS-style `{"releases": [...]}`); the array itself streams in chunks.
+fn send_serde_path(
+    mut input: Box<dyn BufRead>,
+    path: Vec<SmartString>,
+    item_sender: &Sender<Item>,
+    stop_senders: Vec<Sender<()>>,
+    final_output_path: Option<&PathBuf>,
+) -> Result<(), Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    read_chunk(&mut input, &mut buf, ARRAY_CHUNK)?;
+
+    let array_open = loop {
+        match navigate_to_array(&buf, &path) {
+            Ok(Some(open)) => break open,
+            // Path not found / not an array: stream nothing. The worker's
+            // count==0 check then reports "not an array of objects" (threads=1),
+            // matching YAJL's behaviour when its filter matches no array.
+            Ok(None) => return Ok(()),
+            Err(ref e) if jiter_needs_more(e) => {
+                if read_chunk(&mut input, &mut buf, ARRAY_CHUNK)? == 0 {
+                    return Ok(()); // ran out before reaching the array
+                }
+            }
+            Err(e) => return serde_producer_error(e, &stop_senders, final_output_path),
         }
     };
+
+    let prefix = buf[..array_open].to_vec();
+    // Drop the wrapper prefix so the buffer starts at the array's `[`.
+    buf.drain(..array_open);
+    let remainder = scout_array_chunks(
+        buf,
+        input,
+        &path,
+        item_sender,
+        &stop_senders,
+        final_output_path,
+    )?;
+    validate_wrapped_path_remainder(prefix, remainder, &stop_senders, final_output_path)
+}
+
+/// Stream every array-of-objects in `value` as items tagged with their
+/// key-path, returning `value` with those arrays emptied (to become `main`).
+/// Recurses into nested objects but not into array elements, matching YAJL,
+/// which streams an array-of-objects at any depth that is not inside an
+/// already-streamed object (the worker flattens those inner arrays itself).
+fn extract_object_arrays(
+    value: Value,
+    path: &mut Vec<SmartString>,
+    item_sender: &Sender<Item>,
+) -> Result<Value, Error> {
+    match value {
+        Value::Object(mut map) => {
+            for (k, v) in map.iter_mut() {
+                path.push(SmartString::from(k.as_str()));
+                let taken = std::mem::replace(v, Value::Null);
+                *v = extract_object_arrays(taken, path, item_sender)?;
+                path.pop();
+            }
+            Ok(Value::Object(map))
+        }
+        // First element an object => YAJL would stream this whole array; send
+        // every element (non-object elements are reported by the worker, as in
+        // the top-level array case).
+        Value::Array(arr) if arr.first().is_some_and(Value::is_object) => {
+            for elem in &arr {
+                item_sender
+                    .send(Item {
+                        json: elem.to_string(),
+                        path: path.clone(),
+                    })
+                    .context(ChannelItemSnafu {})?;
+            }
+            Ok(Value::Array(vec![]))
+        }
+        other => Ok(other),
+    }
+}
+
+/// Wrapped object with no `--path`: YAJL streams every array-of-objects as its
+/// own table and emits the leftover wrapper (scalars, scalar arrays, nested
+/// objects, arrays emptied) as `main` last. Reproduce that by parsing the whole
+/// document, streaming each array-of-objects (in document order, so tables are
+/// created in YAJL's order), then sending the arrays-emptied wrapper as `main`.
+/// NOTE: this holds the whole document in memory — a wrapped doc with a huge
+/// array should use `--path`, which streams it.
+fn send_serde_wrapped(
+    mut input: Box<dyn BufRead>,
+    item_sender: &Sender<Item>,
+    stop_senders: Vec<Sender<()>>,
+    final_output_path: Option<&PathBuf>,
+) -> Result<(), Error> {
+    let mut bytes = Vec::new();
+    input
+        .read_to_end(&mut bytes)
+        .context(FlattererReadSnafu { filepath: "input" })?;
+    let value: Value = match serde_json::from_slice(&bytes) {
+        Ok(value) => value,
+        Err(e) => return serde_producer_error(e, &stop_senders, final_output_path),
+    };
+
+    // A top-level scalar (or other non-object) is not an array of objects:
+    // send nothing, leaving the worker's count==0 check to report it (threads=1),
+    // matching YAJL.
+    if !value.is_object() {
+        return Ok(());
+    }
+
+    let mut path: Vec<SmartString> = vec![];
+    let main = extract_object_arrays(value, &mut path, item_sender)?;
+    // The leftover wrapper becomes `main`, sent last to match YAJL's order.
+    item_sender
+        .send(Item {
+            json: main.to_string(),
+            path: vec![],
+        })
+        .context(ChannelItemSnafu {})?;
+    Ok(())
+}
+
+/// Stream concatenated top-level values (json-stream / `.jl`): send each
+/// value's raw bytes. Non-object values are caught and reported by the workers.
+fn send_serde_stream(
+    input: Box<dyn BufRead>,
+    item_sender: &Sender<Item>,
+    stop_senders: Vec<Sender<()>>,
+    final_output_path: Option<&PathBuf>,
+) -> Result<(), Error> {
+    let de = serde_json::Deserializer::from_reader(input);
+    for result in de.into_iter::<Box<serde_json::value::RawValue>>() {
+        match result {
+            Ok(raw) => {
+                item_sender
+                    .send(Item {
+                        json: raw.get().to_owned(),
+                        path: vec![],
+                    })
+                    .context(ChannelItemSnafu {})?;
+            }
+            Err(error) => return serde_producer_error(error, &stop_senders, final_output_path),
+        }
+    }
     Ok(())
 }
 
 #[cfg(not(target_family = "wasm"))]
-pub fn flatten_simple<R: Read>(
-    mut input: BufReader<R>,
+/// Single-threaded flatten, for profiling the parse+flatten path without
+/// thread/channel-scheduling noise (its original role for YAJL; now the serde
+/// producer). The serde producer fills an unbounded channel — so it never
+/// blocks without a consumer — and we then drain and flatten each record in the
+/// same thread, which also makes a profile split cleanly into "producer" then
+/// "flatten" phases.
+pub fn flatten_simple<R: Read + 'static>(
+    input: BufReader<R>,
     output: String,
     options: Options,
 ) -> Result<()> {
@@ -3865,90 +4356,69 @@ pub fn flatten_simple<R: Read>(
         options.clone(),
     )?;
 
-    let mut outer: Vec<u8> = vec![];
-    let top_level_type;
-
     if options.ndjson {
         for line in input.lines() {
-            let value =
+            let value: FastValue =
                 serde_json::from_str(&line.context(FlattererIoSnafu)?).context(SerdeReadSnafu)?;
-            flat_files.process_value(value, vec![]);
+            flat_files.process_fast_value(value, vec![]);
             flat_files.create_rows()?;
         }
         flat_files.write_files()?;
         return Ok(());
-    } else {
-        let mut handler = yajlparser::ParseJson::new(
-            &mut outer,
-            None,
-            Some(flat_files),
-            options.json_stream,
-            500 * 1024 * 1024,
-        );
-
-        {
-            let mut parser = Parser::new(&mut handler);
-
-            if let Err(error) = parser.parse(&mut input) {
-                log::debug!("Parse error, whilst in main parsing");
-                remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                    filename: output_path.to_string_lossy(),
-                })?;
-                return Err(Error::YAJLishParseError {
-                    error: format!("Invalid JSON due to the following error: {}", error),
-                });
-            }
-
-            if let Err(error) = parser.finish_parse() {
-                // never seems to reach parse complete on stream data
-                if !error
-                    .to_string()
-                    .contains("Did not reach a ParseComplete status")
-                {
-                    log::debug!("Parse error, whilst in cleaning up parsing");
-                    //stop_sender.send(()).context(ChannelStopSendSnafu {})?;
-                    remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                        filename: output_path.to_string_lossy(),
-                    })?;
-                    return Err(Error::YAJLishParseError {
-                        error: format!("Invalid JSON due to the following error: {}", error),
-                    });
-                }
-            }
-        }
-
-        top_level_type = handler.top_level_type.clone();
-        flat_files = handler.flatfiles.expect("we added it earlier");
-
-        if !handler.error.is_empty() {
-            remove_dir_all(&output_path).context(FlattererRemoveDirSnafu {
-                filename: output_path.to_string_lossy(),
-            })?;
-            return Err(Error::FlattererProcessError {
-                message: handler.error,
-            });
-        }
-        if handler.count == 0 {
-            return Err(Error::FlattererProcessError {
-                message: "The JSON provided as input is not an array of objects".to_string(),
-            });
-        }
-        flat_files.log_info(&format!("Finished processing {} value(s)", handler.count));
     }
 
-    if top_level_type == "object" && !options.json_stream {
-        let json_str = std::str::from_utf8(&outer)
-            .expect("utf8 should be checked by yajl")
-            .to_string();
+    let (sender, receiver) = unbounded();
+    send_json_items(&options, Box::new(input), sender, vec![], Some(&output_path))?;
 
-        let serde_value: Value = serde_json::from_str(&json_str).context(SerdeReadSnafu {})?;
-
-        flat_files.process_value(serde_value, vec![]);
+    let smart_path = options.path.iter().map(SmartString::from).collect_vec();
+    let mut count = 0;
+    for item in receiver {
+        let serde_result = serde_json::from_str(&item.json);
+        if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        if !options.path.is_empty() && item.path != smart_path {
+            continue;
+        }
+        if serde_result.is_err() && !options.json_stream {
+            remove_dir_all(&output_path).ok();
+            return Err(Error::FlattererProcessError {
+                message: "Error parsing JSON, try the --json-stream option.".into(),
+            });
+        }
+        let value: FastValue = match serde_result {
+            Ok(value) => value,
+            Err(error) => {
+                remove_dir_all(&output_path).ok();
+                return Err(error).context(SerdeReadSnafu {});
+            }
+        };
+        if !value.is_object() {
+            remove_dir_all(&output_path).ok();
+            return Err(Error::FlattererProcessError {
+                message: format!(
+                    "Value at array position {} is not an object: value is `{}`",
+                    count, value
+                ),
+            });
+        }
+        let mut initial_path = vec![];
+        if smart_path.is_empty() {
+            initial_path = item.path.clone();
+        }
+        flat_files.process_fast_value(value, initial_path);
         flat_files.create_rows()?;
+        count += 1;
     }
+
+    if count == 0 && !options.ndjson && !options.json_stream {
+        return Err(Error::FlattererProcessError {
+            message: "The JSON provided as input is not an array of objects".to_string(),
+        });
+    }
+    flat_files.log_info(&format!("Finished processing {} value(s)", count));
 
     flat_files.write_files()?;
-
     Ok(())
 }
 
@@ -4337,6 +4807,47 @@ mod tests {
             "fixtures/invalid_json_lines.jl",
             vec![],
             json!({"error_text": "Invalid JSON due to the following error:"}),
+        );
+    }
+
+    fn assert_flatten_str_error(input: &str, options: Options, expected: &str) {
+        let tmp_dir = TempDir::new().unwrap();
+        let output_dir = tmp_dir.path().join("output");
+        let result = flatten(
+            BufReader::new(Cursor::new(input.as_bytes().to_vec())),
+            output_dir.to_string_lossy().into_owned(),
+            options,
+        );
+
+        match result {
+            Ok(_) => panic!("expected flatten to fail"),
+            Err(error) => assert!(
+                error.to_string().contains(expected),
+                "error was {}",
+                error
+            ),
+        }
+        assert!(!output_dir.exists());
+    }
+
+    #[test]
+    fn top_level_array_rejects_trailing_content() {
+        assert_flatten_str_error(
+            r#"[{"a":1}] trailing"#,
+            Options::builder().force(true).build(),
+            "Invalid JSON due to the following error:",
+        );
+    }
+
+    #[test]
+    fn path_array_rejects_trailing_content_after_wrapper() {
+        assert_flatten_str_error(
+            r#"{"items":[{"a":1}]} trailing"#,
+            Options::builder()
+                .force(true)
+                .path(vec!["items".into()])
+                .build(),
+            "Invalid JSON due to the following error:",
         );
     }
 
@@ -4795,9 +5306,29 @@ mod tests {
         )
         .unwrap();
 
-        let value: Value =
+        let mut value: Value =
             serde_json::from_reader(File::open(tmp_dir.path().join("datapackage.json")).unwrap())
                 .unwrap();
+
+        // Under multi-threading the merge step's resource/field ordering is timing-dependent,
+        // so sort by name for a stable snapshot (the field set, types and counts are what matter).
+        let by_name = |a: &Value, b: &Value| {
+            a.get("name")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .cmp(b.get("name").and_then(Value::as_str).unwrap_or(""))
+        };
+        if let Some(resources) = value.get_mut("resources").and_then(Value::as_array_mut) {
+            resources.sort_by(by_name);
+            for resource in resources.iter_mut() {
+                if let Some(fields) = resource
+                    .pointer_mut("/schema/fields")
+                    .and_then(Value::as_array_mut)
+                {
+                    fields.sort_by(by_name);
+                }
+            }
+        }
 
         insta::assert_yaml_snapshot!(&value);
 

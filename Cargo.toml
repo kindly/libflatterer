@@ -11,12 +11,14 @@ homepage = "https://github.com/kindly/libflatterer"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-yajlish = { version = "0.4.0" }
-#yajlish = { path = "../yajlish" }
-serde_json = { version = "1", features = ["preserve_order"] }
+serde_json = { version = "1", features = ["preserve_order", "raw_value"] }
 itertools = "0.14.0"
 csv = "1"
 serde = { version = "1", features = ["derive"] }
+# FxHash on the internal IndexMap/IndexSet lookups (field/table-name keyed):
+# ~3-4x faster than the default SipHash on short string keys, and byte-identical
+# since IndexMap iterates in insertion order regardless of hasher.
+rustc-hash = "2"
 smallvec = "1.15.1"
 regex = "1"
 slug = "0.1"
@@ -28,7 +30,7 @@ lazy_static = "1"
 typed-builder = "0.23.2"
 num_cpus = "1.17.0"
 flate2 = "1.1.9"
-csvs_convert = { version = "0.13.1", default-features = false, features = ["converters"] }
+csvs_convert = { version = "0.13.2", default-features = false, features = ["converters"] }
 bytes = "1.11.1"
 url = "2.5.8"
 jsonpath-rust = "1.0.4"
@@ -52,6 +54,10 @@ futures-util = { version = "0.3.32" }
 parquet = { version = "58.3.0", features = ["async"] }
 tokio-util = { version = "0.7.18", features = ["io", "io-util"] }
 futures = { version = "0.3.32" }
+# Streaming chunk scout for top-level JSON arrays: jiter finds each element's
+# bounds (PartialMode/EOF-aware errors let us refill across chunk boundaries),
+# keeping the producer fast without holding the whole file in memory.
+jiter = "0.15.0"
 arrow-array = "58.3.0"
 arrow-schema = "58.3.0"
 async-compression = { version = "0.4.42", features = ["gzip", "tokio"] }
@@ -63,6 +69,8 @@ logtest = "2.0.0"
 
 [profile.release]
 debug = 1
+lto = "thin"
+codegen-units = 1
 
 [features]
 default = ["parquet"]

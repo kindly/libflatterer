@@ -1,5 +1,6 @@
-use indexmap::IndexMap as HashMap;
+use indexmap::IndexMap;
 use jsonref::JsonRef;
+use rustc_hash::FxBuildHasher;
 use serde_json::Value;
 use slug::slugify;
 use snafu::{ResultExt, Snafu};
@@ -15,6 +16,10 @@ pub enum Error {
 }
 
 type Result<T, E = Error> = std::result::Result<T, E>;
+
+// Same FxHash-backed insertion-ordered map as lib.rs; these maps are assigned
+// directly into FlatFiles, so the hasher type must match.
+type HashMap<K, V> = IndexMap<K, V, FxBuildHasher>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SchemaAnalysis {
@@ -32,8 +37,8 @@ impl SchemaAnalysis {
             schema: schema.to_owned(),
             path_separator: path_separator.to_owned(),
             field_order: vec![],
-            field_order_map: HashMap::new(),
-            field_titles_map: HashMap::new(),
+            field_order_map: HashMap::default(),
+            field_titles_map: HashMap::default(),
             title_tactic,
         }
     }
