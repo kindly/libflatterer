@@ -1242,7 +1242,7 @@ impl FlatFiles {
             let writer = self.tmp_csvs.get_mut(table).unwrap(); //key known
 
             for row in rows {
-                let mut output_row: SmallVec<[String; 30]> = smallvec![];
+                let mut output_row: SmallVec<[SmartString; 30]> = smallvec![];
                 for (num, field) in table_metadata.fields.iter().enumerate() {
                     if let Some(value) = row.get_mut(field) {
                         table_metadata.field_counts[num] += 1;
@@ -1250,7 +1250,7 @@ impl FlatFiles {
                             value_convert(value.take(), &mut table_metadata.describers, num);
                         output_row.push(string_value);
                     } else {
-                        output_row.push("".to_string());
+                        output_row.push(SmartString::new());
                     }
                 }
                 for (key, value) in row {
@@ -1559,7 +1559,7 @@ impl FlatFiles {
             let writer = self.tmp_csvs.get_mut(table).unwrap(); //key known
 
             for row in rows {
-                let mut output_row: SmallVec<[String; 30]> = smallvec![];
+                let mut output_row: SmallVec<[SmartString; 30]> = smallvec![];
                 for (num, field) in table_metadata.fields.iter().enumerate() {
                     if let Some(value) = row.get_mut(field) {
                         table_metadata.field_counts[num] += 1;
@@ -1567,7 +1567,7 @@ impl FlatFiles {
                             value_convert(value.take(), &mut table_metadata.describers, num);
                         output_row.push(string_value);
                     } else {
-                        output_row.push("".to_string());
+                        output_row.push(SmartString::new());
                     }
                 }
                 for (key, value) in row {
@@ -2905,48 +2905,62 @@ impl FlatFiles {
     }
 }
 
-fn value_convert(value: FastValue, describers: &mut [Describer], num: usize) -> String {
+// Returns a `SmartString` rather than a `String`: a parsed string cell is moved out
+// as-is (the parse already produced an inline-or-boxed SmartString — no down-convert,
+// no realloc), and numbers/bools/null format straight into the inline buffer, so the
+// overwhelmingly common short cell never touches the heap. Output bytes are unchanged.
+fn value_convert(value: FastValue, describers: &mut [Describer], num: usize) -> SmartString {
+    use std::fmt::Write as _;
     let describer = &mut describers[num];
 
     match value {
         FastValue::String(val) => {
             describer.process(&val);
-            val.into()
+            val
         }
         FastValue::Null => {
             describer.process("");
-            "".to_string()
+            SmartString::new()
         }
         // Integers keep their exact representation; floats are formatted the same way
         // the YAJL streaming path does (`format!("{}", f64)`), so an integral float
         // like `1.0` renders as `1` rather than `1.0`. This keeps the
-        // iterator/in-memory path consistent with the file path.
+        // iterator/in-memory path consistent with the file path. Formatting goes
+        // through `write!` (same Display output as `to_string()`) directly into the
+        // SmartString, so short numbers stay inline with no heap allocation.
         FastValue::Int(i) => {
             describer.process_num(i as f64);
-            i.to_string()
+            let mut s = SmartString::new();
+            let _ = write!(s, "{}", i);
+            s
         }
         FastValue::UInt(u) => {
             describer.process_num(u as f64);
-            u.to_string()
+            let mut s = SmartString::new();
+            let _ = write!(s, "{}", u);
+            s
         }
         FastValue::Float(f) => {
             describer.process_num(f);
-            format!("{}", f)
+            let mut s = SmartString::new();
+            let _ = write!(s, "{}", f);
+            s
         }
         FastValue::Bool(bool) => {
-            let string = bool.to_string();
-            describer.process(&string);
-            string
+            let mut s = SmartString::new();
+            let _ = write!(s, "{}", bool);
+            describer.process(&s);
+            s
         }
         FastValue::Array(_) => {
             let string = value.to_string();
             describer.process(&string);
-            string
+            string.into()
         }
         FastValue::Object(_) => {
             let string = value.to_string();
             describer.process(&string);
-            string
+            string.into()
         }
     }
 }
