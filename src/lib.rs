@@ -811,8 +811,6 @@ impl FlatFiles {
         emit: bool,
         full_path: SmallVec<[PathItem; 10]>,
         no_index_path: SmallVec<[SmartString; 5]>,
-        one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
-        one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
         parent_one_to_one_key: bool,
         pushdown_keys: SmallVec<[String; 10]>,
         pushdown_values: SmallVec<[FastValue; 10]>,
@@ -897,14 +895,8 @@ impl FlatFiles {
                         new_full_path.push(PathItem::Key(key.clone()));
                         new_full_path.push(PathItem::Index(i));
 
-                        let mut new_one_to_many_full_paths = one_to_many_full_paths.clone();
-                        new_one_to_many_full_paths.push(new_full_path.clone());
-
                         let mut new_no_index_path = no_index_path.clone();
                         new_no_index_path.push(key.clone());
-
-                        let mut new_one_to_many_no_index_paths = one_to_many_no_index_paths.clone();
-                        new_one_to_many_no_index_paths.push(new_no_index_path.clone());
 
                         if self.options.inline_one_to_one
                             && !self.one_to_many_arrays.contains(&new_no_index_path)
@@ -931,8 +923,6 @@ impl FlatFiles {
                                     true,
                                     new_full_path,
                                     new_no_index_path,
-                                    new_one_to_many_full_paths,
-                                    new_one_to_many_no_index_paths,
                                     false,
                                     new_pushdown_keys.clone(),
                                     new_pushdown_values.clone(),
@@ -953,8 +943,6 @@ impl FlatFiles {
                                 true,
                                 new_full_path,
                                 new_no_index_path,
-                                new_one_to_many_full_paths,
-                                new_one_to_many_no_index_paths,
                                 false,
                                 new_pushdown_keys.clone(),
                                 new_pushdown_values.clone(),
@@ -999,8 +987,6 @@ impl FlatFiles {
                         emit_child,
                         new_full_path,
                         new_no_index_path,
-                        one_to_many_full_paths.clone(),
-                        one_to_many_no_index_paths.clone(),
                         one_to_one_array_keys.contains(key),
                         new_pushdown_keys.clone(),
                         new_pushdown_values.clone(),
@@ -1031,12 +1017,7 @@ impl FlatFiles {
                     obj.insert(key.to_owned(), value);
                 }
             }
-            self.process_obj(
-                obj,
-                table_name,
-                one_to_many_full_paths,
-                one_to_many_no_index_paths,
-            );
+            self.process_obj(obj, table_name, full_path);
             None
         } else {
             Some(obj)
@@ -1065,89 +1046,78 @@ impl FlatFiles {
         &mut self,
         mut obj: FastMap,
         table_name: String,
-        one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
-        one_to_many_no_index_paths: SmallVec<[SmallVec<[SmartString; 5]>; 5]>,
+        full_path: SmallVec<[PathItem; 10]>,
     ) {
         if !self.options.no_link {
-            self.insert_link_fields(
-                one_to_many_full_paths,
-                one_to_many_no_index_paths,
-                &mut obj,
-                &table_name,
-            );
+            self.insert_link_fields(&full_path, &mut obj, &table_name);
         }
         let current_list = self.table_rows.get_mut(&table_name).unwrap(); //we added table_row already
         current_list.push(obj);
     }
 
-    fn insert_link_fields(
-        &mut self,
-        one_to_many_full_paths: SmallVec<[SmallVec<[PathItem; 10]>; 5]>,
-        one_to_many_no_index_paths: SmallVec<
-            [SmallVec<[smartstring::SmartString<smartstring::LazyCompact>; 5]>; 5],
-        >,
-        obj: &mut FastMap,
-        table_name: &String,
-    ) {
+    fn insert_link_fields(&mut self, full_path: &[PathItem], obj: &mut FastMap, table_name: &String) {
         // The row number is the same for every link field on this row; compute its
         // string form once instead of re-allocating it per field.
         let row_str = self.row_number.to_string();
         let id_prefix = self.options.id_prefix.as_str();
 
-        // Builds "{id_prefix}{row_str}" optionally followed by ".{full path joined by '.'}".
-        // Sized exactly up front: profiling showed deep paths overflowing a guessed
-        // capacity and reallocating mid-build.
-        let link_value = |full: Option<&SmallVec<[PathItem; 10]>>| -> FastValue {
+        // The one-to-many ancestor rows are exactly the prefixes of `full_path` ending just
+        // after each array index, so we slice `full_path` instead of storing those prefixes.
+        // Builds "{id_prefix}{row_str}" optionally followed by ".{full_path[..end] joined '.'}".
+        let link_value = |end: Option<usize>| -> FastValue {
+            let path: &[PathItem] = match end {
+                Some(e) => &full_path[..e],
+                None => &[],
+            };
             let mut capacity = id_prefix.len() + row_str.len();
-            if let Some(full) = full {
-                for item in full.iter() {
-                    capacity += 1 + item.text_len();
-                }
+            for item in path {
+                capacity += 1 + item.text_len();
             }
             let mut s = String::with_capacity(capacity);
             s.push_str(id_prefix);
             s.push_str(&row_str);
-            if let Some(full) = full {
-                for item in full.iter() {
-                    s.push('.');
-                    item.push_to(&mut s);
-                }
+            for item in path {
+                s.push('.');
+                item.push_to(&mut s);
             }
             FastValue::from(s)
         };
 
-        let mut path_iter = one_to_many_full_paths
+        // Each PathItem::Index marks one array-of-objects (one-to-many) level; that level's
+        // path is full_path[..index_pos + 1]. (One-to-one object keys add no Index.)
+        let boundaries: SmallVec<[usize; 5]> = full_path
             .iter()
-            .zip(one_to_many_no_index_paths.iter())
-            .peekable();
+            .enumerate()
+            .filter(|(_, item)| matches!(item, PathItem::Index(_)))
+            .map(|(i, _)| i + 1)
+            .collect();
 
-        if one_to_many_full_paths.is_empty() {
-            obj.insert(String::from("_link"), link_value(None));
-        } else {
-            obj.insert(
-                String::from("_link"),
-                link_value(Some(&one_to_many_full_paths[one_to_many_full_paths.len() - 1])),
-            );
-        }
+        match boundaries.last() {
+            Some(&last) => obj.insert(String::from("_link"), link_value(Some(last))),
+            None => obj.insert(String::from("_link"), link_value(None)),
+        };
 
-        while let Some((full, no_index)) = path_iter.next() {
-            if path_iter.peek().is_some() {
-                // key: "_link_{table_prefix}{no_index joined by path_separator}"
-                let sep = self.options.path_separator.as_str();
-                let mut key = String::with_capacity(
-                    6 + self.options.table_prefix.len() + no_index.len() * 8,
-                );
+        let sep = self.options.path_separator.as_str();
+        let mut iter = boundaries.iter().peekable();
+        while let Some(&end) = iter.next() {
+            if iter.peek().is_some() {
+                // key: "_link_{table_prefix}{keys in full_path[..end] joined by path_separator}"
+                let mut key = String::with_capacity(6 + self.options.table_prefix.len() + end * 8);
                 key.push_str("_link_");
                 key.push_str(&self.options.table_prefix);
-                for (i, item) in no_index.iter().enumerate() {
-                    if i > 0 {
-                        key.push_str(sep);
+                let mut first = true;
+                for item in &full_path[..end] {
+                    if let PathItem::Key(k) = item {
+                        if !first {
+                            key.push_str(sep);
+                        }
+                        key.push_str(k);
+                        first = false;
                     }
-                    key.push_str(item);
                 }
-                obj.insert(key, link_value(Some(full)));
+                obj.insert(key, link_value(Some(end)));
             } else {
-                obj.insert(String::from("_link"), link_value(Some(full)));
+                obj.insert(String::from("_link"), link_value(Some(end)));
             }
         }
 
@@ -1947,13 +1917,11 @@ impl FlatFiles {
             let mut full_path =
                 SmallVec::from_iter(initial_path.iter().map(|item| PathItem::Key(item.clone())));
             let no_index_path = SmallVec::from_vec(initial_path);
-            let mut one_to_many_full_paths = SmallVec::new();
-            let mut one_to_many_no_index_paths = SmallVec::new();
 
+            // A `--path` element is itself a one-to-many level; mark it with an Index so
+            // insert_link_fields derives the boundary from full_path like any other array.
             if has_path {
                 full_path.push(PathItem::Index(self.sub_array_row_number));
-                one_to_many_full_paths.push(full_path.clone());
-                one_to_many_no_index_paths.push(no_index_path.clone());
             }
 
             self.handle_obj(
@@ -1961,8 +1929,6 @@ impl FlatFiles {
                 true,
                 full_path,
                 no_index_path,
-                one_to_many_full_paths,
-                one_to_many_no_index_paths,
                 false,
                 smallvec![],
                 smallvec![],
