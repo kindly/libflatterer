@@ -384,6 +384,12 @@ pub struct Options {
     /// Output csv files. Default `true`
     #[builder(default = true)]
     pub csv: bool,
+    /// Only produce the schema (datapackage.json/fields.csv/tables.csv), no data.
+    /// Overrides `csv` and the other output flags. Uses a fast structural scan that
+    /// skips flattening/data-writing where the option set allows, falling back to the
+    /// full engine (with data writes suppressed) for options it can't reproduce.
+    #[builder(default)]
+    pub schema_only: bool,
     /// Output xlsx
     #[builder(default)]
     pub xlsx: bool,
@@ -1504,6 +1510,280 @@ impl FlatFiles {
             val.clear();
         }
         Ok(())
+    }
+
+    /// schema_only: ensure a table exists in metadata, creating its synthetic `_link`
+    /// columns up front (mirroring `insert_link_fields`'s naming). `array_ancestors` is
+    /// the chain of array-of-objects tables strictly above this one (excludes `main`).
+    fn ensure_schema_table(&mut self, table_name: &str, array_ancestors: &[String]) {
+        if self.table_metadata.contains_key(table_name) {
+            return;
+        }
+        let output_path = self.output_dir.join(format!("tmp/{}.csv", table_name));
+        let meta = TableMetadata::new(
+            table_name,
+            &self.main_table_name,
+            &self.options.path_separator,
+            &self.options.table_prefix,
+            output_path,
+        );
+        self.table_metadata.insert(table_name.to_string(), meta);
+        self.table_order
+            .insert(table_name.to_string(), table_name.to_string());
+
+        if !self.options.no_link {
+            let mut links = vec!["_link".to_string()];
+            for a in array_ancestors {
+                links.push(format!("_link_{}{}", self.options.table_prefix, a));
+            }
+            if table_name != self.main_table_name {
+                links.push(format!("_link_{}", self.main_table_name));
+            }
+            for link in links {
+                self.add_schema_field(table_name, &link, true);
+            }
+        }
+    }
+
+    /// Find `field`'s index in a table's metadata, appending it (describer + title) if new.
+    /// O(1) via `fields_set.get_index_of` — the set's index equals the `fields` index since
+    /// they always grow together. Takes the metadata + titles map directly so callers can
+    /// resolve the table ONCE per field instead of re-hashing the table name per access.
+    fn ensure_field_in(
+        m: &mut TableMetadata,
+        field_titles_map: &HashMap<String, String>,
+        field: &str,
+        force_string: bool,
+    ) -> usize {
+        // Linear scan over `fields` beats hashing the field name for the small column
+        // counts that are typical here; pathologically wide tables (hundreds of cols)
+        // would prefer a hash, but they're rare and produce unwieldy output anyway.
+        if let Some(idx) = m.fields.iter().position(|f| f == field) {
+            return idx;
+        }
+        let title_path = format!("{}{}", m.table_name_with_separator, field);
+        let title = field_titles_map
+            .get(&title_path)
+            .cloned()
+            .unwrap_or_else(|| field.to_string());
+        m.fields.push(field.to_string());
+        m.fields_set.insert(field.to_string());
+        m.field_counts.push(0);
+        m.ignore_fields.push(false);
+        let opts = DescriberOptions::builder()
+            .force_string(force_string)
+            .stats(false)
+            .build();
+        m.describers.push(Describer::new_with_options(opts));
+        m.field_titles.push(title);
+        #[cfg(not(target_family = "wasm"))]
+        m.arrow_vecs.push(ArrayBuilders::String(vec![]));
+        m.fields.len() - 1
+    }
+
+    /// schema_only: ensure a field exists in a table's metadata; return its index.
+    /// One table lookup (used for the rarer scalar-array and `_link` fields).
+    fn add_schema_field(&mut self, table: &str, field: &str, force_string: bool) -> usize {
+        let titles = &self.field_titles_map;
+        let m = self.table_metadata.get_mut(table).unwrap();
+        Self::ensure_field_in(m, titles, field, force_string)
+    }
+
+    /// schema_only: record a scalar leaf into a field (count + describer type), matching
+    /// `value_convert`'s describer feed so types agree with the full engine.
+    fn feed_schema_scalar(&mut self, table: &str, field: &str, jiter: &mut jiter::Jiter, peek: jiter::Peek) -> Result<()> {
+        let force_string = self.options.all_strings;
+        // single table lookup: resolve/create the field, count it, feed its describer.
+        let titles = &self.field_titles_map;
+        let m = self.table_metadata.get_mut(table).unwrap();
+        let idx = Self::ensure_field_in(m, titles, field, force_string);
+        m.field_counts[idx] += 1;
+        let d = &mut m.describers[idx];
+        if peek == jiter::Peek::String {
+            d.process(jiter.known_str().map_err(schema_err)?);
+        } else if peek == jiter::Peek::Null {
+            jiter.known_null().map_err(schema_err)?;
+            d.process("");
+        } else if peek == jiter::Peek::True || peek == jiter::Peek::False {
+            let b = jiter.known_bool(peek).map_err(schema_err)?;
+            d.process(if b { "true" } else { "false" });
+        } else {
+            let f = jiter.known_float(peek).map_err(schema_err)?;
+            d.process_num(f);
+        }
+        Ok(())
+    }
+
+    /// schema_only: scan an object's fields into `table` under `prefix` (one-to-one
+    /// inlining extends the prefix; arrays-of-objects recurse into child tables; scalar
+    /// arrays become one text field). Mirrors `handle_obj`'s field/table rules.
+    fn scan_into_table(
+        &mut self,
+        jiter: &mut jiter::Jiter,
+        table: &str,
+        prefix: &mut String,
+        array_ancestors: &[String],
+    ) -> Result<()> {
+        let sep = self.options.path_separator.clone();
+        let mut key_opt = jiter.known_object().map_err(schema_err)?.map(str::to_string);
+        while let Some(k) = key_opt {
+            let flen = prefix.len();
+            prefix.push_str(&k);
+            let peek = jiter.peek().map_err(schema_err)?;
+            if peek == jiter::Peek::Object {
+                prefix.push_str(&sep);
+                self.scan_into_table(jiter, table, prefix, array_ancestors)?;
+            } else if peek == jiter::Peek::Array {
+                match jiter.known_array().map_err(schema_err)? {
+                    None => {}
+                    Some(elem) if elem == jiter::Peek::Object => {
+                        let child = if table == self.main_table_name {
+                            format!("{}{}", self.options.table_prefix, prefix)
+                        } else {
+                            format!("{}{}{}", table, sep, prefix)
+                        };
+                        let mut child_ancestors = array_ancestors.to_vec();
+                        if table != self.main_table_name {
+                            child_ancestors.push(table.to_string());
+                        }
+                        self.scan_row(jiter, &child, &child_ancestors)?;
+                        while let Some(el) = jiter.array_step().map_err(schema_err)? {
+                            if el == jiter::Peek::Object {
+                                self.scan_row(jiter, &child, &child_ancestors)?;
+                            } else {
+                                jiter.known_skip(el).map_err(schema_err)?;
+                            }
+                        }
+                    }
+                    Some(elem) => {
+                        // Non-object array -> one cell, replicating handle_obj's value:
+                        //  - all strings  -> CSV-join the elements (so e.g. ["5"] -> "5",
+                        //    which the describer can still type as a number);
+                        //  - otherwise    -> the array serializes to a JSON string (text).
+                        let mut strings: Vec<String> = vec![];
+                        let mut all_strings = true;
+                        if elem == jiter::Peek::String {
+                            strings.push(jiter.known_str().map_err(schema_err)?.to_string());
+                        } else {
+                            all_strings = false;
+                            jiter.known_skip(elem).map_err(schema_err)?;
+                        }
+                        while let Some(el) = jiter.array_step().map_err(schema_err)? {
+                            if all_strings && el == jiter::Peek::String {
+                                strings.push(jiter.known_str().map_err(schema_err)?.to_string());
+                            } else {
+                                all_strings = false;
+                                jiter.known_skip(el).map_err(schema_err)?;
+                            }
+                        }
+                        let idx = self.add_schema_field(table, prefix, self.options.all_strings);
+                        let m = self.table_metadata.get_mut(table).unwrap();
+                        m.field_counts[idx] += 1;
+                        if all_strings && !strings.is_empty() {
+                            let mut csv_bytes = vec![];
+                            {
+                                let mut w = csv::Writer::from_writer(&mut csv_bytes);
+                                let _ = w.write_record(&strings); // writing to a Vec can't fail
+                            }
+                            let joined = String::from_utf8_lossy(&csv_bytes);
+                            m.describers[idx].process(joined.trim());
+                        } else {
+                            // mixed/number/nested array -> serialized JSON string -> text
+                            m.describers[idx].process("text");
+                        }
+                    }
+                }
+            } else {
+                self.feed_schema_scalar(table, prefix, jiter, peek)?;
+            }
+            prefix.truncate(flen);
+            key_opt = jiter.next_key().map_err(schema_err)?.map(str::to_string);
+        }
+        Ok(())
+    }
+
+    /// schema_only: scan one object that is a row of `table`.
+    fn scan_row(&mut self, jiter: &mut jiter::Jiter, table: &str, array_ancestors: &[String]) -> Result<()> {
+        self.ensure_schema_table(table, array_ancestors);
+        if let Some(m) = self.table_metadata.get_mut(table) {
+            m.rows += 1;
+        }
+        let mut prefix = String::new();
+        self.scan_into_table(jiter, table, &mut prefix, array_ancestors)
+    }
+
+    /// schema_only entry: structurally scan one record's bytes into `table_metadata`.
+    fn scan_record_schema(&mut self, json: &[u8], initial_path: &[SmartString]) -> Result<()> {
+        let mut jiter = jiter::Jiter::new(json);
+        match jiter.peek() {
+            Ok(jiter::Peek::Object) => {
+                let table = if initial_path.is_empty() {
+                    self.main_table_name.clone()
+                } else {
+                    initial_path.join(&self.options.path_separator)
+                };
+                self.scan_row(&mut jiter, &table, &[])
+            }
+            _ => Ok(()), // non-object record: nothing to add (matches filter-miss)
+        }
+    }
+
+    /// schema_only: set `_link` field counts to their table's row count (they appear on
+    /// every row). Data field counts are accumulated during the scan.
+    fn finalize_schema_counts(&mut self) {
+        for meta in self.table_metadata.values_mut() {
+            let rows = meta.rows as u32;
+            for (i, field) in meta.fields.iter().enumerate() {
+                if field == "_link" || field.starts_with("_link_") {
+                    meta.field_counts[i] = rows;
+                }
+            }
+        }
+    }
+
+    /// schema_only: fold another worker's scanned schema into this one. Tables/fields are
+    /// unioned in first-seen order (worker order = document order), counts summed, and
+    /// per-field describers merged (their type candidates intersect, so a column's type is
+    /// what held across all workers — matching the datapackage merge `csv=false` uses).
+    fn merge_schema_from(&mut self, other: FlatFiles) {
+        for (table, other_meta) in other.table_metadata {
+            if !self.table_metadata.contains_key(&table) {
+                self.table_order
+                    .entry(table.clone())
+                    .or_insert_with(|| table.clone());
+                self.table_metadata.insert(table, other_meta);
+                continue;
+            }
+            let meta = self.table_metadata.get_mut(&table).unwrap();
+            meta.rows += other_meta.rows;
+            let TableMetadata {
+                fields,
+                field_counts,
+                field_titles,
+                describers,
+                ..
+            } = other_meta;
+            for (((field, count), title), describer) in fields
+                .into_iter()
+                .zip(field_counts)
+                .zip(field_titles)
+                .zip(describers)
+            {
+                if let Some(idx) = meta.fields.iter().position(|f| *f == field) {
+                    meta.field_counts[idx] += count;
+                    meta.describers[idx].merge(describer);
+                } else {
+                    meta.fields_set.insert(field.clone());
+                    meta.fields.push(field);
+                    meta.field_counts.push(count);
+                    meta.ignore_fields.push(false);
+                    meta.field_titles.push(title);
+                    meta.describers.push(describer);
+                    #[cfg(not(target_family = "wasm"))]
+                    meta.arrow_vecs.push(ArrayBuilders::String(vec![]));
+                }
+            }
+        }
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -2905,6 +3185,13 @@ impl FlatFiles {
     }
 }
 
+/// Map a jiter scan error onto the flatterer error type (schema_only path).
+fn schema_err(e: jiter::JiterError) -> Error {
+    Error::FlattererProcessError {
+        message: format!("Error scanning JSON for schema: {e}"),
+    }
+}
+
 // Returns a `SmartString` rather than a `String`: a parsed string cell is moved out
 // as-is (the parse already produced an inline-or-boxed SmartString — no down-convert,
 // no realloc), and numbers/bools/null format straight into the inline buffer, so the
@@ -3577,6 +3864,21 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
         options.threads = num_cpus::get()
     }
 
+    if options.schema_only {
+        // schema_only produces only the schema; suppress every data output.
+        options.csv = false;
+        options.xlsx = false;
+        options.sqlite = false;
+        options.parquet = false;
+        options.ods = false;
+        options.postgres_connection = String::new();
+    }
+    // When schema_only and the option set is reproducible, workers run the fast structural
+    // scan instead of the full flatten; the per-worker schemas reconcile through the same
+    // datapackage merge as csv=false. Unsupported options fall back to the full engine
+    // (still data-suppressed, so it emits the schema correctly, just not as fast).
+    let scan_mode = options.schema_only && fast_schema_supported(&options);
+
     let final_output_path = PathBuf::from(output);
     let parts_path = final_output_path.join("parts");
 
@@ -3625,7 +3927,10 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
 
         if options.threads > 1 {
             options_clone.id_prefix = format!("id-{}.{}", index, options_clone.id_prefix);
-            options_clone.csv = true;
+            // scan_mode writes only per-worker schema (datapackage.json), no data CSVs;
+            // the datapackage merge reconciles them. Forcing csv here would make write_files
+            // look for tmp data CSVs the scan never produced.
+            options_clone.csv = !scan_mode;
             options_clone.xlsx = false;
             options_clone.sqlite = false;
             options_clone.parquet = false;
@@ -3650,6 +3955,22 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
                 .collect_vec();
             let mut count = 0;
             for item in item_receiver.iter() {
+                if scan_mode {
+                    // schema_only fast path: structural scan, no FastValue tree / flatten
+                    if item.json.as_bytes().iter().all(u8::is_ascii_whitespace) {
+                        continue;
+                    }
+                    if !options_clone.path.is_empty() && item.path != smart_path {
+                        continue;
+                    }
+                    let mut initial_path = vec![];
+                    if smart_path.is_empty() {
+                        initial_path = item.path.clone()
+                    }
+                    flat_files.scan_record_schema(item.json.as_bytes(), &initial_path)?;
+                    count += 1;
+                    continue;
+                }
                 let serde_result = serde_json::from_str(&item.json);
 
                 if serde_result.is_err() && item.json.as_bytes().iter().all(u8::is_ascii_whitespace)
@@ -3713,6 +4034,11 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
                 options_clone.thread_name, count
             ));
 
+            if scan_mode {
+                // schema_only: no per-worker write; the caller merges schemas in-memory.
+                flat_files.finalize_schema_counts();
+                return Ok(flat_files);
+            }
             flat_files.write_files()?;
             Ok(flat_files)
         });
@@ -3728,19 +4054,48 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
         Some(&final_output_path),
     )?;
 
+    let mut scan_files: Vec<FlatFiles> = vec![];
     for join_handler in join_handlers {
         match join_handler.join() {
-            Ok(result) => {
-                if let Err(err) = result {
+            Ok(result) => match result {
+                Ok(flat_files) => {
+                    if scan_mode {
+                        scan_files.push(flat_files);
+                    }
+                }
+                Err(err) => {
                     log::debug!("Error on thread join {}", err);
                     remove_dir_all(&final_output_path).context(FlattererRemoveDirSnafu {
                         filename: final_output_path.to_string_lossy(),
                     })?;
                     return Err(err);
                 }
-            }
+            },
             Err(err) => panic::resume_unwind(err),
         }
+    }
+
+    // schema_only: merge the per-worker schemas in memory and write once. Reuses the same
+    // describer-type reconciliation as the file merge, without re-reading any data.
+    #[cfg(not(target_family = "wasm"))]
+    if scan_mode {
+        let mut merged = scan_files.remove(0);
+        merged.output_dir = final_output_path.clone();
+        for other in scan_files {
+            merged.merge_schema_from(other);
+        }
+        merged.finalize_schema_counts();
+        let tmp_path = final_output_path.join("tmp");
+        create_dir_all(&tmp_path).context(FlattererCreateDirSnafu {
+            filename: tmp_path.to_string_lossy(),
+        })?;
+        merged.write_files()?;
+        if options.threads > 1 {
+            remove_dir_all(&parts_path).context(FlattererRemoveDirSnafu {
+                filename: parts_path.to_string_lossy(),
+            })?;
+        }
+        return Ok(());
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -3842,6 +4197,23 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
     }
 
     Ok(())
+}
+
+/// Whether the fast structural scan can reproduce this option set's schema. Options
+/// that change which fields/tables exist (and that the scan doesn't replicate) force a
+/// fallback to the full engine.
+fn fast_schema_supported(options: &Options) -> bool {
+    options.pushdown.is_empty()
+        && options.emit_obj.is_empty()
+        && !options.arrays_new_table
+        && !options.inline_one_to_one
+        && options.schema.is_empty()
+        && options.tables_csv.is_empty()
+        && options.tables_csv_string.is_empty()
+        && options.fields_csv.is_empty()
+        && options.fields_csv_string.is_empty()
+        && !options.only_tables
+        && !options.only_fields
 }
 
 /// One record handed from the producer to a worker: its JSON text and the
@@ -4662,6 +5034,55 @@ mod tests {
                 vec!["csv/main.csv", "csv/platforms.csv", "csv/developer.csv"],
                 json!({}),
             )
+        }
+    }
+
+    /// The fast `schema_only` scan must discover the same tables + fields + types as the
+    /// full engine with data suppressed (`csv=false`), the slow exact reference. Compared
+    /// at threads=1 (deterministic; column ORDER may differ, so compare as sorted sets).
+    #[test]
+    fn schema_only_matches_csv_false() {
+        let run = |fixture: &str, schema_only: bool| -> (Vec<String>, Vec<String>) {
+            let tmp = TempDir::new().unwrap();
+            let out = tmp.path().join("o");
+            let mut opts = Options::builder().build();
+            opts.force = true;
+            opts.threads = 1;
+            opts.json_stream = !fixture.ends_with(".json"); // .jl/.ndjson are concatenated values
+            if schema_only {
+                opts.schema_only = true;
+            } else {
+                opts.csv = false;
+            }
+            let reader = std::io::BufReader::new(std::fs::File::open(fixture).unwrap());
+            flatten(reader, out.to_string_lossy().into_owned(), opts).unwrap();
+            // table,field,type triples (drop title/count), sorted
+            let mut fields: Vec<String> = std::fs::read_to_string(out.join("fields.csv"))
+                .unwrap()
+                .lines()
+                .skip(1)
+                .map(|l| l.splitn(4, ',').take(3).collect::<Vec<_>>().join(","))
+                .collect();
+            fields.sort();
+            let mut tables: Vec<String> = std::fs::read_to_string(out.join("tables.csv"))
+                .unwrap()
+                .lines()
+                .map(str::to_string)
+                .collect();
+            tables.sort();
+            (fields, tables)
+        };
+        for fixture in ["fixtures/basic.jl", "fixtures/basic.json"] {
+            let scan = run(fixture, true);
+            let reference = run(fixture, false);
+            assert_eq!(
+                scan.0, reference.0,
+                "schema_only fields/types differ from csv=false for {fixture}"
+            );
+            assert_eq!(
+                scan.1, reference.1,
+                "schema_only tables differ from csv=false for {fixture}"
+            );
         }
     }
 
