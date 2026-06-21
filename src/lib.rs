@@ -4751,29 +4751,75 @@ fn send_serde_wrapped(
     Ok(())
 }
 
-/// Stream concatenated top-level values (json-stream / `.jl`): send each
-/// value's raw bytes. Non-object values are caught and reported by the workers.
+/// Stream concatenated top-level values (json-stream / `.jl`): send each value's raw
+/// bytes. Non-object values are caught and reported by the workers.
+///
+/// Chunk scout (mirrors `scout_array_chunks`, but for whitespace-separated top-level
+/// values rather than array elements): jiter walks each complete value in a 256 KB
+/// buffer, ships its bytes, and refills across boundaries — bounded memory and ~jiter
+/// speed. This replaces the previous `Deserializer::from_reader(..).into_iter::<Box<
+/// RawValue>>()` producer (~208 MB/s, IoRead + per-value alloc) that bottlenecked the
+/// workers at high thread counts.
 fn send_serde_stream(
-    input: Box<dyn BufRead>,
+    mut input: Box<dyn BufRead>,
     item_sender: &Sender<Item>,
     stop_senders: Vec<Sender<()>>,
     final_output_path: Option<&PathBuf>,
 ) -> Result<(), Error> {
-    let de = serde_json::Deserializer::from_reader(input);
-    for result in de.into_iter::<Box<serde_json::value::RawValue>>() {
-        match result {
-            Ok(raw) => {
-                item_sender
-                    .send(Item {
-                        json: raw.get().to_owned(),
-                        path: vec![],
-                    })
-                    .context(ChannelItemSnafu {})?;
+    let mut buf: Vec<u8> = Vec::new();
+    read_chunk(&mut input, &mut buf, ARRAY_CHUNK)?;
+
+    loop {
+        // Emit every complete top-level value currently in the buffer; the inner loop
+        // breaks with the offset to keep when the next value needs more bytes.
+        let mut pos = 0;
+        let refill_from = loop {
+            let mut jiter = jiter::Jiter::new(&buf[pos..]);
+            match jiter.peek() {
+                Ok(peek) => {
+                    let vstart = pos + jiter.current_index();
+                    match jiter.known_skip(peek) {
+                        Ok(()) => {
+                            let vend = pos + jiter.current_index();
+                            match std::str::from_utf8(&buf[vstart..vend]) {
+                                Ok(s) => item_sender
+                                    .send(Item {
+                                        json: s.to_owned(),
+                                        path: vec![],
+                                    })
+                                    .context(ChannelItemSnafu {})?,
+                                Err(e) => {
+                                    return serde_producer_error(e, &stop_senders, final_output_path)
+                                }
+                            }
+                            pos = vend;
+                        }
+                        // value straddles the buffer end -> refill keeping it
+                        Err(e) if jiter_needs_more(&e) => break vstart,
+                        Err(e) => {
+                            return serde_producer_error(e, &stop_senders, final_output_path)
+                        }
+                    }
+                }
+                // only whitespace / nothing left -> refill keeping it
+                Err(e) if jiter_needs_more(&e) => break pos,
+                Err(e) => return serde_producer_error(e, &stop_senders, final_output_path),
             }
-            Err(error) => return serde_producer_error(error, &stop_senders, final_output_path),
+        };
+
+        let mut next_buf = Vec::with_capacity(buf.len() - refill_from + ARRAY_CHUNK);
+        next_buf.extend_from_slice(&buf[refill_from..]);
+        let got = read_chunk(&mut input, &mut next_buf, ARRAY_CHUNK)?;
+        if got == 0 {
+            // input finished: a clean stream leaves only trailing whitespace, otherwise
+            // the last value was truncated.
+            if next_buf.iter().all(u8::is_ascii_whitespace) {
+                return Ok(());
+            }
+            return serde_producer_error("unexpected end of input", &stop_senders, final_output_path);
         }
+        buf = next_buf;
     }
-    Ok(())
 }
 
 #[cfg(not(target_family = "wasm"))]
@@ -5211,6 +5257,61 @@ mod tests {
             o,
         );
         assert!(res.is_err(), "schema_only should error on a non-object record");
+    }
+
+    /// The json_stream chunk scout must produce the same output as ndjson for the same
+    /// records (concatenated values, whitespace/newlines between them).
+    #[test]
+    fn json_stream_matches_ndjson() {
+        let records = "{\"id\":1,\"a\":[{\"x\":1}]}\n{\"id\":2,\"a\":[{\"x\":2},{\"x\":3}]}\n  {\"id\":3,\"b\":\"y\"}\n";
+        let run = |json_stream: bool| -> Vec<(String, Vec<u8>)> {
+            let tmp = TempDir::new().unwrap();
+            let out = tmp.path().join("o");
+            let mut o = Options::builder().build();
+            o.force = true;
+            o.threads = 1;
+            if json_stream {
+                o.json_stream = true;
+            } else {
+                o.ndjson = true;
+            }
+            flatten(
+                std::io::Cursor::new(records.as_bytes().to_vec()),
+                out.to_string_lossy().into_owned(),
+                o,
+            )
+            .unwrap();
+            let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(out.join("csv"))
+                .unwrap()
+                .map(|e| {
+                    let p = e.unwrap().path();
+                    (
+                        p.file_name().unwrap().to_string_lossy().into_owned(),
+                        std::fs::read(&p).unwrap(),
+                    )
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        assert_eq!(run(true), run(false), "json_stream output differs from ndjson");
+    }
+
+    /// The json_stream scout must error on a truncated trailing value, not accept it.
+    #[test]
+    fn json_stream_errors_on_truncated() {
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("o");
+        let mut o = Options::builder().build();
+        o.force = true;
+        o.threads = 1;
+        o.json_stream = true;
+        let res = flatten(
+            std::io::Cursor::new(b"{\"id\":1} {\"id\":2".to_vec()),
+            out.to_string_lossy().into_owned(),
+            o,
+        );
+        assert!(res.is_err(), "json_stream should error on a truncated trailing value");
     }
 
     #[test]
