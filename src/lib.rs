@@ -811,6 +811,21 @@ impl FlatFiles {
         Ok(())
     }
 
+    /// A non-object element of an array whose first element is an object (or any
+    /// element under `arrays_new_table`) becomes its own row under a synthetic
+    /// `value` column: strings stored raw, everything else as compact JSON text.
+    /// Shared by `handle_obj` (nested arrays) and the record consumers (top-level /
+    /// streamed array elements) so the two paths agree.
+    fn value_row(v: FastValue) -> FastMap {
+        let value = match v {
+            FastValue::String(s) => FastValue::String(s),
+            other => FastValue::from(format!("{}", other)),
+        };
+        let mut obj = FastMap::new();
+        obj.insert("value", value);
+        obj
+    }
+
     fn handle_obj(
         &mut self,
         mut obj: FastMap,
@@ -865,12 +880,11 @@ impl FlatFiles {
         for (key, value) in obj.iter_mut() {
             if let Some(arr) = value.as_array() {
                 let mut str_count = 0;
-                let mut obj_count = 0;
                 let arr_length = arr.len();
+                // An array whose FIRST element is an object becomes a child table;
+                // any non-object elements get their own `{value: ...}` rows (below).
+                let first_is_object = arr.first().is_some_and(FastValue::is_object);
                 for array_value in arr {
-                    if array_value.is_object() {
-                        obj_count += 1
-                    };
                     if array_value.is_string() {
                         str_count += 1
                     };
@@ -891,7 +905,7 @@ impl FlatFiles {
                     let trimmed = values.trim();
                     let trimmed_value = FastValue::from(trimmed);
                     to_insert.push((key.clone(), trimmed_value))
-                } else if obj_count == arr_length || self.options.arrays_new_table {
+                } else if first_is_object || self.options.arrays_new_table {
                     to_delete.push(key.clone());
                     let mut removed_array = value.take(); // obj.remove(&key).unwrap(); //key known
                     let my_array = removed_array.as_array_mut().unwrap(); //key known as array
@@ -937,23 +951,19 @@ impl FlatFiles {
                             continue;
                         }
 
-                        if self.options.arrays_new_table {
-                            let json_value = match my_value {
-                                FastValue::String(s) => FastValue::String(s),
-                                _ => FastValue::from(format!("{}", my_value)),
-                            };
-                            let mut my_obj = FastMap::new();
-                            my_obj.insert("value", json_value);
-                            self.handle_obj(
-                                my_obj,
-                                true,
-                                new_full_path,
-                                new_no_index_path,
-                                false,
-                                new_pushdown_keys.clone(),
-                                new_pushdown_values.clone(),
-                            );
-                        }
+                        // Non-object element: give it its own row under a synthetic
+                        // `value` column (the object branch above `continue`s, so we
+                        // only reach here for non-objects in a first-element-object
+                        // array — or any element when `arrays_new_table` is set).
+                        self.handle_obj(
+                            Self::value_row(my_value),
+                            true,
+                            new_full_path,
+                            new_no_index_path,
+                            false,
+                            new_pushdown_keys.clone(),
+                            new_pushdown_values.clone(),
+                        );
                     }
                 } else {
                     let json_value = FastValue::from(format!("{}", value));
@@ -1622,42 +1632,24 @@ impl FlatFiles {
                 // Classify every element (handle_obj's choice depends on the whole array),
                 // consuming the array on the main jiter as we go.
                 let arr_start = jiter.current_index();
-                let (mut total, mut obj_count, mut str_count) = (0usize, 0usize, 0usize);
+                let (mut total, mut str_count) = (0usize, 0usize);
+                let mut first_peek: Option<jiter::Peek> = None;
                 let mut elem = jiter.known_array().map_err(schema_err)?;
                 while let Some(p) = elem {
+                    if first_peek.is_none() {
+                        first_peek = Some(p);
+                    }
                     total += 1;
-                    if p == jiter::Peek::Object {
-                        obj_count += 1;
-                    } else if p == jiter::Peek::String {
+                    if p == jiter::Peek::String {
                         str_count += 1;
                     }
                     jiter.known_skip(p).map_err(schema_err)?;
                     elem = jiter.array_step().map_err(schema_err)?;
                 }
+                let first_is_object = first_peek == Some(jiter::Peek::Object);
                 let arr_bytes = &json[arr_start..jiter.current_index()];
                 if total == 0 {
                     // empty array: no field, no table (handle_obj deletes the key)
-                } else if obj_count == total {
-                    // all objects -> child table; re-scan, skipping empty object elements
-                    let child = if table == self.main_table_name {
-                        format!("{}{}", self.options.table_prefix, prefix)
-                    } else {
-                        format!("{}{}{}", table, sep, prefix)
-                    };
-                    let mut child_ancestors = array_ancestors.to_vec();
-                    if table != self.main_table_name {
-                        child_ancestors.push(table.to_string());
-                    }
-                    let mut sub = jiter::Jiter::new(arr_bytes);
-                    let mut e = sub.known_array().map_err(schema_err)?;
-                    while let Some(p) = e {
-                        if p == jiter::Peek::Object {
-                            self.scan_row(&mut sub, arr_bytes, &child, &child_ancestors, false)?;
-                        } else {
-                            sub.known_skip(p).map_err(schema_err)?;
-                        }
-                        e = sub.array_step().map_err(schema_err)?;
-                    }
                 } else if str_count == total {
                     // all strings -> one CSV-joined cell (so ["5"] -> "5" -> number)
                     let mut strings: Vec<String> = vec![];
@@ -1680,11 +1672,51 @@ impl FlatFiles {
                         let _ = w.write_record(&strings); // writing to a Vec can't fail
                     }
                     m.describers[idx].process(String::from_utf8_lossy(&csv_bytes).trim());
+                } else if first_is_object {
+                    // first element an object -> child table; object elements are rows,
+                    // each non-object element gets its own row under a `value` column.
+                    let child = if table == self.main_table_name {
+                        format!("{}{}", self.options.table_prefix, prefix)
+                    } else {
+                        format!("{}{}{}", table, sep, prefix)
+                    };
+                    let mut child_ancestors = array_ancestors.to_vec();
+                    if table != self.main_table_name {
+                        child_ancestors.push(table.to_string());
+                    }
+                    let mut sub = jiter::Jiter::new(arr_bytes);
+                    let mut e = sub.known_array().map_err(schema_err)?;
+                    while let Some(p) = e {
+                        if p == jiter::Peek::Object {
+                            self.scan_row(&mut sub, arr_bytes, &child, &child_ancestors, false)?;
+                        } else {
+                            // non-object element: a row with a synthetic `value` field
+                            // (strings raw, else the element's JSON text), matching
+                            // handle_obj's `value_row`.
+                            let estart = sub.current_index();
+                            let vstring = if p == jiter::Peek::String {
+                                sub.known_str().map_err(schema_err)?.to_string()
+                            } else {
+                                sub.known_skip(p).map_err(schema_err)?;
+                                String::from_utf8_lossy(&arr_bytes[estart..sub.current_index()])
+                                    .into_owned()
+                            };
+                            self.ensure_schema_table(&child, &child_ancestors);
+                            if let Some(m) = self.table_metadata.get_mut(&child) {
+                                m.rows += 1;
+                            }
+                            let idx = self.add_schema_field(&child, "value", self.options.all_strings);
+                            let m = self.table_metadata.get_mut(&child).unwrap();
+                            m.field_counts[idx] += 1;
+                            m.describers[idx].process(&vstring);
+                        }
+                        e = sub.array_step().map_err(schema_err)?;
+                    }
                 } else {
-                    // mixed / numbers / nested array -> handle_obj stores the serialized
-                    // array (FastValue::from(format!("{}", value))); the describer parses
-                    // it and types it `array`. Feed the array's own JSON bytes (the describer
-                    // parses, so whitespace vs compact doesn't change the type).
+                    // first element not an object (and not all-strings) -> handle_obj stores
+                    // the serialized array (FastValue::from(format!("{}", value))); the
+                    // describer parses it and types it `array`. Feed the array's own JSON
+                    // bytes (the describer parses, so whitespace vs compact doesn't matter).
                     let serialized = String::from_utf8_lossy(arr_bytes).into_owned();
                     let idx = self.add_schema_field(table, prefix, self.options.all_strings);
                     let m = self.table_metadata.get_mut(table).unwrap();
@@ -1767,14 +1799,40 @@ impl FlatFiles {
                 };
                 self.scan_row(&mut jiter, json, &table, &[], true)
             }
-            // Match the full worker: a non-object record is an error, not silently skipped.
-            Ok(_) => Err(Error::FlattererProcessError {
-                message: format!(
-                    "Value at array position {} is not an object: value is `{}`",
-                    position,
-                    String::from_utf8_lossy(json).trim()
-                ),
-            }),
+            // A genuine non-object record (an ndjson / json-stream line, or a top-level
+            // scalar) is still an error. A non-object element streamed from a
+            // first-element-object array becomes a row under a synthetic `value` column,
+            // mirroring handle_obj's `value_row` and the data consumers.
+            Ok(peek) => {
+                if self.options.ndjson || self.options.json_stream {
+                    return Err(Error::FlattererProcessError {
+                        message: format!(
+                            "Value at array position {} is not an object: value is `{}`",
+                            position,
+                            String::from_utf8_lossy(json).trim()
+                        ),
+                    });
+                }
+                let table = if initial_path.is_empty() {
+                    self.main_table_name.clone()
+                } else {
+                    initial_path.join(&self.options.path_separator)
+                };
+                let vstring = if peek == jiter::Peek::String {
+                    jiter.known_str().map_err(schema_err)?.to_string()
+                } else {
+                    String::from_utf8_lossy(json).trim().to_string()
+                };
+                self.ensure_schema_table(&table, &[]);
+                if let Some(m) = self.table_metadata.get_mut(&table) {
+                    m.rows += 1;
+                }
+                let idx = self.add_schema_field(&table, "value", self.options.all_strings);
+                let m = self.table_metadata.get_mut(&table).unwrap();
+                m.field_counts[idx] += 1;
+                m.describers[idx].process(&vstring);
+                Ok(())
+            }
             Err(e) => Err(schema_err(e)),
         }
     }
@@ -3524,8 +3582,25 @@ pub fn flatten_to_memory<R: Read>(input: BufReader<R>, mut options: Options) -> 
         }
 
         if json.is_array() {
-            for value in json.as_array_mut().unwrap() {
-                flat_files.process_value(value.take(), vec![]);
+            let arr = json.as_array_mut().unwrap();
+            // Strict first-element rule, matching the streaming path: stream as records
+            // only if the first element is an object, else "not an array of objects".
+            if !arr.first().is_some_and(Value::is_object) {
+                return Err(Error::FlattererProcessError {
+                    message: "The JSON provided as input is not an array of objects".to_string(),
+                });
+            }
+            for value in arr {
+                let v = value.take();
+                if v.is_object() {
+                    flat_files.process_value(v, vec![]);
+                } else {
+                    // non-object element -> its own `{value: ...}` row
+                    flat_files.process_fast_value(
+                        FastValue::Object(FlatFiles::value_row(FastValue::from(v))),
+                        vec![],
+                    );
+                }
                 flat_files.create_rows()?;
                 count += 1;
                 if count % 500000 == 0 {
@@ -3835,14 +3910,21 @@ async fn item_reciever(
 
         let value: FastValue = serde_result.context(SerdeReadSnafu {})?;
 
-        if !value.is_object() {
+        // A non-object record: an ndjson / json-stream line (or top-level scalar) is an
+        // error; a non-object element streamed from a first-element-object array becomes
+        // a `{value: ...}` row (mirrors handle_obj's value_row).
+        let value = if value.is_object() {
+            value
+        } else if options_clone.ndjson || options_clone.json_stream {
             return Err(Error::FlattererProcessError {
                 message: format!(
                     "Value at array position {} is not an object: value is `{}`",
                     count, value
                 ),
             });
-        }
+        } else {
+            FastValue::Object(FlatFiles::value_row(value))
+        };
 
         count += 1;
 
@@ -4031,14 +4113,21 @@ pub fn flatten<R: BufRead + 'static>(input: R, output: String, mut options: Opti
 
                 let value: FastValue = serde_result.context(SerdeReadSnafu {})?;
 
-                if !value.is_object() {
+                // A non-object record: an ndjson / json-stream line (or top-level scalar)
+                // is an error; a non-object element streamed from a first-element-object
+                // array becomes a `{value: ...}` row (mirrors handle_obj's value_row).
+                let value = if value.is_object() {
+                    value
+                } else if options_clone.ndjson || options_clone.json_stream {
                     return Err(Error::FlattererProcessError {
                         message: format!(
                             "Value at array position {} is not an object: value is `{}`",
                             count, value
                         ),
                     });
-                }
+                } else {
+                    FastValue::Object(FlatFiles::value_row(value))
+                };
 
                 let mut initial_path = vec![];
                 if smart_path.is_empty() {
@@ -4474,7 +4563,11 @@ fn scout_array_chunks(
     stop_senders: &[Sender<()>],
     final_output_path: Option<&PathBuf>,
 ) -> Result<ArrayRemainder, Error> {
-    let mut seen_object = false;
+    // Strict first-element rule: the array streams as records iff its FIRST element is
+    // an object. `decided`/`streaming` persist across chunk refills (the first element
+    // may span chunks, so the decision is made when it first parses completely).
+    let mut decided = false;
+    let mut streaming = false;
     let mut exhausted = false;
 
     loop {
@@ -4495,22 +4588,22 @@ fn scout_array_chunks(
                             let end = jiter.current_index();
                             match jiter.array_step() {
                                 Ok(next) => {
-                                    // element value + its separator both complete.
-                                    // Match YAJL's "array is a stream of objects":
-                                    // scalars before the first object are ignored
-                                    // (all-scalar array -> "not an array of
-                                    // objects"); scalars once streaming are sent so
-                                    // the worker reports them as a non-object at
-                                    // their position (`[{...}, 1]`).
+                                    // element value + its separator both complete. The
+                                    // FIRST element decides: if it's an object the whole
+                                    // array streams (later non-objects are sent too and
+                                    // the consumer wraps them as `{value: ...}` rows); if
+                                    // it isn't, nothing is sent and the consumer's count==0
+                                    // reports "not an array of objects".
                                     let elem = &buf[start..end];
                                     let is_object = elem
                                         .iter()
                                         .find(|b| !b.is_ascii_whitespace())
                                         .is_some_and(|b| *b == b'{');
-                                    if is_object {
-                                        seen_object = true;
+                                    if !decided {
+                                        decided = true;
+                                        streaming = is_object;
                                     }
-                                    if seen_object {
+                                    if streaming {
                                         match std::str::from_utf8(elem) {
                                             Ok(s) => item_sender
                                                 .send(Item {
@@ -5132,7 +5225,12 @@ pub fn flatten_simple<R: Read + 'static>(
                 return Err(error).context(SerdeReadSnafu {});
             }
         };
-        if !value.is_object() {
+        // A non-object record: an ndjson / json-stream line (or top-level scalar) is an
+        // error; a non-object element streamed from a first-element-object array becomes
+        // a `{value: ...}` row (mirrors handle_obj's value_row).
+        let value = if value.is_object() {
+            value
+        } else if options.ndjson || options.json_stream {
             remove_dir_all(&output_path).ok();
             return Err(Error::FlattererProcessError {
                 message: format!(
@@ -5140,7 +5238,9 @@ pub fn flatten_simple<R: Read + 'static>(
                     count, value
                 ),
             });
-        }
+        } else {
+            FastValue::Object(FlatFiles::value_row(value))
+        };
         let mut initial_path = vec![];
         if smart_path.is_empty() {
             initial_path = item.path.clone();
@@ -5477,7 +5577,7 @@ mod tests {
             (fields, tables)
         };
         for content in [
-            r#"{"id":1,"a":[{"x":1},2]}"#,        // mixed array -> text field, NOT a table
+            r#"{"id":1,"a":[{"x":1},2]}"#,        // first-object mixed array -> table w/ `value` row
             r#"{"id":1,"a":[{"x":1},{"x":2}]}"#,  // all-object array -> child table
             r#"{"id":1,"a":[{}]}"#,               // empty-object array -> no table
             r#"{"id":1,"a":[{},{"x":1}]}"#,       // empty + non-empty object -> table from the 2nd
@@ -5566,6 +5666,221 @@ mod tests {
             o,
         );
         assert!(res.is_err(), "json_stream should error on a truncated trailing value");
+    }
+
+    /// Wrapped-no-path: every array-of-objects is streamed as its own table. Pins how
+    /// MULTIPLE arrays and arrays at DIFFERENT NESTING LEVELS are handled by the serde
+    /// producer (`extract_object_arrays`) and the worker:
+    ///   - an array reached through wrapper OBJECTS is named by its full key-path and
+    ///     links only to `main` (the intervening objects are not array levels);
+    ///   - an array nested inside an array ELEMENT is found by the worker and additionally
+    ///     links to its array ancestor (`_link_<ancestor>`).
+    #[test]
+    fn wrapped_streaming_arrays_structure() {
+        // fixture -> { table -> sorted field names }, flattened wrapped-no-path at threads=1.
+        let tables_of = |fixture: &str| -> std::collections::BTreeMap<String, Vec<String>> {
+            let tmp = TempDir::new().unwrap();
+            let out = tmp.path().join("o");
+            let mut o = Options::builder().build();
+            o.force = true;
+            o.threads = 1; // no ndjson/json_stream/path -> wrapped-no-path producer
+            flatten(
+                std::io::BufReader::new(std::fs::File::open(fixture).unwrap()),
+                out.to_string_lossy().into_owned(),
+                o,
+            )
+            .unwrap();
+            let mut by_table: std::collections::BTreeMap<String, Vec<String>> = Default::default();
+            for line in std::fs::read_to_string(out.join("fields.csv")).unwrap().lines().skip(1) {
+                let c: Vec<&str> = line.splitn(4, ',').collect();
+                by_table.entry(c[0].into()).or_default().push(c[1].into());
+            }
+            for v in by_table.values_mut() {
+                v.sort();
+            }
+            by_table
+        };
+        let names = |m: &std::collections::BTreeMap<String, Vec<String>>| -> Vec<String> {
+            m.keys().cloned().collect()
+        };
+
+        // (1) arrays at different nesting levels through objects: path-named, all link to main.
+        let levels = tables_of("fixtures/streaming_arrays_nested_levels.json");
+        assert_eq!(
+            names(&levels),
+            vec!["main", "top", "wrapper_deeper_leaf", "wrapper_mid"]
+        );
+        assert_eq!(levels["main"], vec!["_link", "id"]);
+        assert_eq!(levels["top"], vec!["_link", "_link_main", "name"]);
+        assert_eq!(levels["wrapper_mid"], vec!["_link", "_link_main", "name"]);
+        assert_eq!(levels["wrapper_deeper_leaf"], vec!["_link", "_link_main", "name"]);
+
+        // (2) array nested through an object INSIDE an array element: links to its ancestor.
+        let inelem = tables_of("fixtures/streaming_arrays_in_element.json");
+        assert_eq!(names(&inelem), vec!["main", "outer", "outer_detail_items"]);
+        assert_eq!(inelem["outer"], vec!["_link", "_link_main", "id"]);
+        assert_eq!(
+            inelem["outer_detail_items"],
+            vec!["_link", "_link_main", "_link_outer", "sku"]
+        );
+
+        // (3) combo: object-inline + top array + through-object array + in-element array.
+        let combo = tables_of("fixtures/streaming_arrays_combo.json");
+        assert_eq!(
+            names(&combo),
+            vec!["main", "releases", "releases_awards", "stats_by_year"]
+        );
+        assert_eq!(combo["main"], vec!["_link", "meta_source"]);
+        assert_eq!(combo["releases"], vec!["_link", "_link_main", "ocid"]);
+        assert_eq!(
+            combo["releases_awards"],
+            vec!["_link", "_link_main", "_link_releases", "id"]
+        );
+        assert_eq!(combo["stats_by_year"], vec!["_link", "_link_main", "year"]);
+
+        // (4) multiple sibling top-level arrays (existing fixture): one table each, plus their
+        // in-element nested arrays.
+        let multi = tables_of("fixtures/basic_with_multiple.json");
+        for t in ["main", "games", "moreGames", "games_platforms", "moreGames_platforms"] {
+            assert!(multi.contains_key(t), "basic_with_multiple missing table {t}");
+        }
+    }
+
+    /// The memory-bounded streaming wrapped producer (`stream_wrapped`) must produce
+    /// byte-identical output to the buffered `send_serde_wrapped` on every wrapped shape:
+    /// multiple arrays, arrays at different nesting levels, in-element nesting, scalars,
+    /// scalar arrays, nested objects.
+    #[test]
+    fn wrapped_streaming_matches_buffered() {
+        let run = |fixture: &str, stream: bool| -> Vec<(String, Vec<u8>)> {
+            let tmp = TempDir::new().unwrap();
+            let out = tmp.path().join("o");
+            let mut o = Options::builder().build();
+            o.force = true;
+            o.threads = 1; // wrapped-no-path
+            o.stream_wrapped = stream;
+            flatten(
+                std::io::BufReader::new(std::fs::File::open(fixture).unwrap()),
+                out.to_string_lossy().into_owned(),
+                o,
+            )
+            .unwrap();
+            let mut files: Vec<(String, Vec<u8>)> = std::fs::read_dir(out.join("csv"))
+                .unwrap()
+                .map(|e| {
+                    let p = e.unwrap().path();
+                    (
+                        p.file_name().unwrap().to_string_lossy().into_owned(),
+                        std::fs::read(&p).unwrap(),
+                    )
+                })
+                .collect();
+            files.sort();
+            files
+        };
+        for fixture in [
+            "fixtures/streaming_arrays_nested_levels.json",
+            "fixtures/streaming_arrays_in_element.json",
+            "fixtures/streaming_arrays_combo.json",
+            "fixtures/basic_with_multiple.json",
+            "fixtures/basic_in_object.json",
+            "fixtures/basic_in_object_with_extra.json",
+        ] {
+            assert_eq!(
+                run(fixture, false),
+                run(fixture, true),
+                "streaming wrapped output differs from buffered for {fixture}"
+            );
+        }
+    }
+
+    /// The streaming wrapped producer must handle the edge shapes: a truncated wrapper
+    /// errors; a clean wrapper succeeds. A wrapper array whose first element is an object
+    /// but that also holds non-objects no longer errors — those become `{value: ...}`
+    /// rows (see `mixed_array_value_rows`).
+    #[test]
+    fn wrapped_streaming_error_parity() {
+        let run = |bytes: &[u8]| -> bool {
+            let tmp = TempDir::new().unwrap();
+            let out = tmp.path().join("o");
+            let mut o = Options::builder().build();
+            o.force = true;
+            o.threads = 1;
+            o.stream_wrapped = true;
+            flatten(
+                std::io::Cursor::new(bytes.to_vec()),
+                out.to_string_lossy().into_owned(),
+                o,
+            )
+            .is_err()
+        };
+        assert!(run(b"{\"a\":[{\"x\":1}],\"b\":"), "truncated wrapper should error");
+        assert!(
+            !run(b"{\"a\":[{\"x\":1},2]}"),
+            "first-element-object array with a non-object element should NOT error (value-row)"
+        );
+        // a clean wrapper with no streamable array is fine (just main)
+        assert!(!run(b"{\"a\":1,\"b\":[1,2]}"), "scalar-only wrapper should not error");
+    }
+
+    /// An array whose FIRST element is an object becomes a table; non-object elements get
+    /// their own row under a synthetic `value` column (strings raw, else JSON text), with
+    /// the object fields blank. Holds for nested arrays (handle_obj), wrapped streaming +
+    /// buffered, and top-level arrays — and the streaming/buffered wrapped paths agree.
+    #[test]
+    fn mixed_array_value_rows() {
+        // read a table's CSV as (header, rows) given the flatten options/input.
+        let run = |bytes: &[u8], stream_wrapped: bool, table: &str| -> (Vec<String>, Vec<Vec<String>>) {
+            let tmp = TempDir::new().unwrap();
+            let out = tmp.path().join("o");
+            let mut o = Options::builder().build();
+            o.force = true;
+            o.threads = 1;
+            o.stream_wrapped = stream_wrapped;
+            flatten(
+                std::io::Cursor::new(bytes.to_vec()),
+                out.to_string_lossy().into_owned(),
+                o,
+            )
+            .unwrap();
+            let mut rdr = csv::Reader::from_path(out.join("csv").join(table)).unwrap();
+            let header: Vec<String> = rdr.headers().unwrap().iter().map(str::to_string).collect();
+            let rows: Vec<Vec<String>> = rdr
+                .records()
+                .map(|r| r.unwrap().iter().map(str::to_string).collect())
+                .collect();
+            (header, rows)
+        };
+        // cell value of `field` in the row that has the given (field,value) marker
+        let col = |header: &[String], field: &str| header.iter().position(|h| h == field);
+
+        // ---- wrapped: child table `a`, streaming and buffered must agree + carry value ----
+        for stream in [false, true] {
+            let (header, rows) = run(br#"{"a":[{"x":1},2,"hi",[9]]}"#, stream, "a.csv");
+            let vi = col(&header, "value").expect("`value` column present");
+            let xi = col(&header, "x").expect("`x` column present");
+            assert_eq!(rows.len(), 4, "one row per element (stream={stream})");
+            // object element keeps x, value blank
+            assert_eq!(rows[0][xi], "1");
+            assert_eq!(rows[0][vi], "");
+            // non-object elements: x blank, value = the element as text (raw string, else JSON)
+            assert_eq!(rows[1][xi], "");
+            assert_eq!(rows[1][vi], "2");
+            assert_eq!(rows[2][vi], "hi");
+            assert_eq!(rows[3][vi], "[9]");
+        }
+
+        // ---- top-level array -> main table with a value column ----
+        let (header, rows) = run(br#"[{"x":1},2]"#, false, "main.csv");
+        let vi = col(&header, "value").expect("`value` column present in main");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][vi], "2");
+
+        // ---- nested array inside a record (handle_obj path) ----
+        let (header, rows) = run(br#"{"k":[{"x":1},"n"]}"#, false, "k.csv");
+        let vi = col(&header, "value").expect("`value` column present in k");
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[1][vi], "n");
     }
 
     #[test]
@@ -5811,13 +6126,35 @@ mod tests {
         );
     }
 
+    /// `[{"foo":"bar"},1]`: the first element is an object, so the array streams as the
+    /// main table; the trailing scalar `1` is no longer an error — it becomes its own row
+    /// under a synthetic `value` column (with `foo` blank). Self-contained (no Postgres).
     #[test]
     fn array_mixed() {
-        test_output(
-            "fixtures/array_mixed.json",
-            vec![],
-            json!({"error_text": "Value at array position 1 is not an object: value is `1`"}),
-        );
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("o");
+        let mut o = Options::builder().build();
+        o.force = true;
+        o.threads = 1;
+        flatten(
+            std::io::BufReader::new(std::fs::File::open("fixtures/array_mixed.json").unwrap()),
+            out.to_string_lossy().into_owned(),
+            o,
+        )
+        .unwrap();
+        let mut rdr = csv::Reader::from_path(out.join("csv").join("main.csv")).unwrap();
+        let header: Vec<String> = rdr.headers().unwrap().iter().map(str::to_string).collect();
+        let rows: Vec<Vec<String>> = rdr
+            .records()
+            .map(|r| r.unwrap().iter().map(str::to_string).collect())
+            .collect();
+        let fi = header.iter().position(|h| h == "foo").expect("`foo` column");
+        let vi = header.iter().position(|h| h == "value").expect("`value` column");
+        assert_eq!(rows.len(), 2, "one row per element");
+        assert_eq!(rows[0][fi], "bar");
+        assert_eq!(rows[0][vi], "");
+        assert_eq!(rows[1][fi], "");
+        assert_eq!(rows[1][vi], "1");
     }
 
     #[test]
