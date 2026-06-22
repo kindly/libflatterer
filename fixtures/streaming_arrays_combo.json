@@ -1,0 +1,7 @@
+{
+  "meta": { "source": "x" },
+  "releases": [
+    { "ocid": "r1", "awards": [{ "id": "a1" }, { "id": "a2" }] }
+  ],
+  "stats": { "by_year": [{ "year": 2020 }] }
+}

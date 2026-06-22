@@ -1,0 +1,10 @@
+{
+  "id": "root",
+  "top": [{ "name": "t1" }, { "name": "t2" }],
+  "wrapper": {
+    "mid": [{ "name": "m1" }],
+    "deeper": {
+      "leaf": [{ "name": "l1" }, { "name": "l2" }]
+    }
+  }
+}

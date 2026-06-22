@@ -390,6 +390,12 @@ pub struct Options {
     /// full engine (with data writes suppressed) for options it can't reproduce.
     #[builder(default)]
     pub schema_only: bool,
+    /// Stream the wrapped-no-path case (memory-bounded) instead of buffering the whole
+    /// document. Default `true`: validated byte-identical to the buffered path while keeping
+    /// peak RSS bounded by the chunk size rather than the document size. Set `false` to fall
+    /// back to the buffered `send_serde_wrapped` (whole-document) producer.
+    #[builder(default = true)]
+    pub stream_wrapped: bool,
     /// Output xlsx
     #[builder(default)]
     pub xlsx: bool,
@@ -4318,7 +4324,11 @@ fn send_json_items(
         return send_serde_path(input, smart_path, &item_sender, stop_senders, final_output_path);
     }
     // wrapped object whose nested arrays-of-objects each become a table, or a
-    // top-level scalar (handled as "not an array of objects")
+    // top-level scalar (handled as "not an array of objects"). Streamed (memory-bounded)
+    // by default; `stream_wrapped = false` falls back to the buffered whole-document path.
+    if options.stream_wrapped {
+        return scout_wrapped_chunks(&item_sender, &stop_senders, final_output_path, input);
+    }
     send_serde_wrapped(input, &item_sender, stop_senders, final_output_path)
 }
 
@@ -4749,6 +4759,250 @@ fn send_serde_wrapped(
         })
         .context(ChannelItemSnafu {})?;
     Ok(())
+}
+
+#[derive(PartialEq)]
+enum WalkStatus {
+    /// The value was fully parsed in the current buffer.
+    Done,
+    /// The buffer ended mid-value; the caller should compact + refill and re-walk.
+    NeedMore,
+}
+
+/// Delete the given (start, end) byte ranges from `buf` (ranges must be ascending and
+/// non-overlapping, which they are by walk order). Used to drop already-emitted array
+/// elements and collapse fully-streamed arrays to `[]`, keeping `buf` ~= the skeleton.
+fn apply_removals(buf: &[u8], removals: &[(usize, usize)]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(buf.len());
+    let mut pos = 0;
+    for &(s, e) in removals {
+        out.extend_from_slice(&buf[pos..s]);
+        pos = e;
+    }
+    out.extend_from_slice(&buf[pos..]);
+    out
+}
+
+/// Streaming counterpart of `extract_object_arrays`: walk the value in `buf`, streaming
+/// each array-of-objects' elements (tagged with the key-path) and recording byte ranges
+/// to remove so `buf` stays ~= the skeleton. Returns `NeedMore` when the buffer ends
+/// mid-value (the driver refills and re-walks from the start; already-streamed arrays are
+/// `[]` by then, so they're skipped). Mirrors `extract_object_arrays`'s rules exactly:
+/// recurse objects, stream arrays whose first element is an object, leave everything else.
+#[allow(clippy::too_many_arguments)]
+fn walk_wrapped(
+    jiter: &mut jiter::Jiter,
+    buf: &[u8],
+    path: &mut Vec<SmartString>,
+    item_sender: &Sender<Item>,
+    removals: &mut Vec<(usize, usize)>,
+    stop_senders: &[Sender<()>],
+    final_output_path: Option<&PathBuf>,
+) -> Result<WalkStatus, Error> {
+    macro_rules! more_or_err {
+        ($e:expr) => {
+            if jiter_needs_more(&$e) {
+                return Ok(WalkStatus::NeedMore);
+            } else {
+                return serde_producer_error($e, stop_senders, final_output_path);
+            }
+        };
+    }
+
+    let peek = match jiter.peek() {
+        Ok(p) => p,
+        Err(e) => more_or_err!(e),
+    };
+
+    if peek == jiter::Peek::Object {
+        let mut key = match jiter.known_object() {
+            Ok(k) => k.map(str::to_string),
+            Err(e) => more_or_err!(e),
+        };
+        while let Some(k) = key {
+            path.push(SmartString::from(k));
+            let status =
+                walk_wrapped(jiter, buf, path, item_sender, removals, stop_senders, final_output_path)?;
+            path.pop();
+            if status == WalkStatus::NeedMore {
+                return Ok(WalkStatus::NeedMore);
+            }
+            key = match jiter.next_key() {
+                Ok(k) => k.map(str::to_string),
+                Err(e) => more_or_err!(e),
+            };
+        }
+        Ok(WalkStatus::Done)
+    } else if peek == jiter::Peek::Array {
+        let open = jiter.current_index(); // at '['
+        let first = match jiter.known_array() {
+            Ok(f) => f,
+            Err(e) => more_or_err!(e),
+        };
+        match first {
+            None => Ok(WalkStatus::Done), // empty array: skeleton (stays `[]`)
+            Some(elem) if elem == jiter::Peek::Object => {
+                // array-of-objects: stream elements (emit only once element + separator
+                // are both complete, like scout_array_chunks, so a partial tail re-parses).
+                let mut elem = Some(elem);
+                while let Some(ep) = elem {
+                    let estart = jiter.current_index();
+                    match jiter.known_skip(ep) {
+                        Ok(()) => {
+                            let eend = jiter.current_index();
+                            match jiter.array_step() {
+                                Ok(next) => {
+                                    match std::str::from_utf8(&buf[estart..eend]) {
+                                        Ok(s) => item_sender
+                                            .send(Item {
+                                                json: s.to_owned(),
+                                                path: path.clone(),
+                                            })
+                                            .context(ChannelItemSnafu {})?,
+                                        Err(e) => {
+                                            return serde_producer_error(
+                                                e,
+                                                stop_senders,
+                                                final_output_path,
+                                            )
+                                        }
+                                    }
+                                    if next.is_none() {
+                                        // array fully streamed -> collapse to `[]`
+                                        let after_close = jiter.current_index();
+                                        removals.push((open + 1, after_close - 1));
+                                        return Ok(WalkStatus::Done);
+                                    }
+                                    elem = next;
+                                }
+                                // element value parsed but its separator needs more: keep
+                                // from this element's start (it isn't emitted yet).
+                                Err(e) if jiter_needs_more(&e) => {
+                                    removals.push((open + 1, estart));
+                                    return Ok(WalkStatus::NeedMore);
+                                }
+                                Err(e) => {
+                                    return serde_producer_error(e, stop_senders, final_output_path)
+                                }
+                            }
+                        }
+                        Err(e) if jiter_needs_more(&e) => {
+                            removals.push((open + 1, estart));
+                            return Ok(WalkStatus::NeedMore);
+                        }
+                        Err(e) => return serde_producer_error(e, stop_senders, final_output_path),
+                    }
+                }
+                Ok(WalkStatus::Done)
+            }
+            Some(other) => {
+                // first element not an object: not a streamable array (scalar/mixed array);
+                // leave it in `main`, just skip past it.
+                if let Err(e) = jiter.known_skip(other) {
+                    more_or_err!(e);
+                }
+                loop {
+                    match jiter.array_step() {
+                        Ok(Some(p)) => {
+                            if let Err(e) = jiter.known_skip(p) {
+                                more_or_err!(e);
+                            }
+                        }
+                        Ok(None) => return Ok(WalkStatus::Done),
+                        Err(e) => more_or_err!(e),
+                    }
+                }
+            }
+        }
+    } else {
+        // scalar: skeleton, skip it.
+        match jiter.known_skip(peek) {
+            Ok(()) => Ok(WalkStatus::Done),
+            Err(e) => more_or_err!(e),
+        }
+    }
+}
+
+/// Wrapped object with no `--path`, streaming + memory-bounded: walk the wrapper in 256 KB
+/// chunks, streaming each array-of-objects element-by-element and compacting streamed arrays
+/// out of the buffer so only the skeleton (the eventual `main`) plus one array window stays
+/// resident. Byte-identical to `send_serde_wrapped` but without holding the whole document.
+fn scout_wrapped_chunks(
+    item_sender: &Sender<Item>,
+    stop_senders: &[Sender<()>],
+    final_output_path: Option<&PathBuf>,
+    mut input: Box<dyn BufRead>,
+) -> Result<(), Error> {
+    let mut buf: Vec<u8> = Vec::new();
+    read_chunk(&mut input, &mut buf, ARRAY_CHUNK)?;
+
+    // A non-object top-level value is not a wrapper: validate it and send nothing (the
+    // worker's count==0 reports "not an array of objects"), matching send_serde_wrapped.
+    {
+        let mut jiter = jiter::Jiter::new(&buf);
+        loop {
+            match jiter.peek() {
+                Ok(jiter::Peek::Object) => break,
+                Ok(_) => return Ok(()),
+                Err(e) if jiter_needs_more(&e) => {
+                    let before = buf.len();
+                    if read_chunk(&mut input, &mut buf, ARRAY_CHUNK)? == 0 {
+                        return Ok(()); // empty / whitespace-only input
+                    }
+                    debug_assert!(buf.len() > before);
+                    jiter = jiter::Jiter::new(&buf);
+                }
+                Err(e) => return serde_producer_error(e, stop_senders, final_output_path),
+            }
+        }
+    }
+
+    let mut exhausted = false;
+    loop {
+        let mut removals: Vec<(usize, usize)> = vec![];
+        let mut path: Vec<SmartString> = vec![];
+        let status = {
+            let mut jiter = jiter::Jiter::new(&buf);
+            walk_wrapped(
+                &mut jiter,
+                &buf,
+                &mut path,
+                item_sender,
+                &mut removals,
+                stop_senders,
+                final_output_path,
+            )?
+        };
+        buf = apply_removals(&buf, &removals);
+        match status {
+            WalkStatus::Done => {
+                // The compacted buffer is the wrapper with every array-of-objects emptied:
+                // the `main` record, sent last to match send_serde_wrapped's order.
+                match std::str::from_utf8(&buf) {
+                    Ok(s) => item_sender
+                        .send(Item {
+                            json: s.trim().to_owned(),
+                            path: vec![],
+                        })
+                        .context(ChannelItemSnafu {})?,
+                    Err(e) => return serde_producer_error(e, stop_senders, final_output_path),
+                }
+                return Ok(());
+            }
+            WalkStatus::NeedMore => {
+                if read_chunk(&mut input, &mut buf, ARRAY_CHUNK)? == 0 {
+                    if exhausted {
+                        return serde_producer_error(
+                            "unexpected end of input",
+                            stop_senders,
+                            final_output_path,
+                        );
+                    }
+                    exhausted = true;
+                }
+            }
+        }
+    }
 }
 
 /// Stream concatenated top-level values (json-stream / `.jl`): send each value's raw

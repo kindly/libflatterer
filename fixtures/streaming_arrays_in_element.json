@@ -1,0 +1,6 @@
+{
+  "outer": [
+    { "id": 1, "detail": { "items": [{ "sku": "a" }, { "sku": "b" }] } },
+    { "id": 2, "detail": { "items": [{ "sku": "c" }] } }
+  ]
+}
