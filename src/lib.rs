@@ -2593,16 +2593,23 @@ impl FlatFiles {
                 fields.push(field);
 
                 if field_name.starts_with("_link") && field_name != "_link" {
-                    let foreign_table = self
-                        .table_order
-                        .get(&field_title[6..])
-                        .expect("table should be in table order");
-
-                    if !tables_to_exclude.contains(&foreign_table) {
-                        foreign_keys.push(
-                            json!(
-                            {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
-                        ))
+                    let foreign_name = &field_title[6..];
+                    match self.table_order.get(foreign_name) {
+                        Some(foreign_table) => {
+                            if !tables_to_exclude.contains(&foreign_table) {
+                                foreign_keys.push(json!(
+                                    {"fields":field_title, "reference": {"resource": foreign_table, "fields": "_link"}}
+                                ))
+                            }
+                        }
+                        // Multi-threaded + wrapped input: this part holds a child table whose
+                        // parent record (e.g. the singleton wrapper `main`) was processed by a
+                        // different worker, so the parent isn't in THIS part's table_order. The
+                        // parent resource still exists in the merged datapackage, so emit the
+                        // foreign key referencing it by name (rather than panicking).
+                        None => foreign_keys.push(json!(
+                            {"fields":field_title, "reference": {"resource": foreign_name, "fields": "_link"}}
+                        )),
                     }
                 };
             }
@@ -5821,6 +5828,53 @@ mod tests {
         );
         // a clean wrapper with no streamable array is fine (just main)
         assert!(!run(b"{\"a\":1,\"b\":[1,2]}"), "scalar-only wrapper should not error");
+    }
+
+    /// Regression: wrapped-no-path input flattened with `threads > 1` used to panic
+    /// ("table should be in table order"). The wrapper `main` is a single record sent
+    /// last, so the work-stealing channel hands it to ONE worker; other workers build the
+    /// extracted child table (which carries a `_link_main` foreign key) without ever
+    /// creating `main`, so `main` is absent from that part's `table_order` and the
+    /// per-worker datapackage foreign-key generation blew up. It must tolerate a parent
+    /// table being absent from this part (it exists in the merged datapackage).
+    #[test]
+    fn wrapped_multithread_datapackage() {
+        let mut records = String::new();
+        for i in 0..500 {
+            if i > 0 {
+                records.push(',');
+            }
+            records.push_str(&format!("{{\"a\":{i},\"b\":\"x\"}}"));
+        }
+        let doc = format!("{{\"meta\":1,\"wrap\":[{records}]}}");
+        let tmp = TempDir::new().unwrap();
+        let out = tmp.path().join("o");
+        let mut o = Options::builder().build();
+        o.force = true;
+        o.threads = 4; // exercises the multi-threaded merge path
+        flatten(
+            std::io::Cursor::new(doc.into_bytes()),
+            out.to_string_lossy().into_owned(),
+            o,
+        )
+        .unwrap();
+        assert!(out.join("csv/main.csv").exists(), "wrapper `main` table");
+        assert!(out.join("csv/wrap.csv").exists(), "extracted `wrap` table");
+        // the `wrap` resource must carry the _link_main foreign key referencing `main`
+        let dp: Value =
+            serde_json::from_reader(File::open(out.join("datapackage.json")).unwrap()).unwrap();
+        let wrap = dp["resources"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["name"] == "wrap")
+            .expect("wrap resource present");
+        let fks = wrap["schema"]["foreignKeys"].as_array().unwrap();
+        assert!(
+            fks.iter()
+                .any(|f| f["reference"]["resource"] == "main" && f["fields"] == "_link_main"),
+            "wrap should have a _link_main foreign key to main, got {fks:?}"
+        );
     }
 
     /// An array whose FIRST element is an object becomes a table; non-object elements get
